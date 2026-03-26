@@ -102,9 +102,14 @@ app.get("/api/quiz/today", async (_req, res) => {
     }
 
     const quiz = result.rows[0];
+    const questions =
+      typeof quiz.questions === "string"
+        ? JSON.parse(quiz.questions)
+        : JSON.parse(JSON.stringify(quiz.questions));
+
     res.status(200).json({
       theme: quiz.theme,
-      questions: quiz.questions,
+      questions,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
