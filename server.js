@@ -1,4 +1,5 @@
 const express = require("express");
+const path = require("path");
 const { Pool } = require("pg");
 
 const app = express();
@@ -76,6 +77,10 @@ setupTestTable();
 
 app.get("/", (_req, res) => {
   res.status(200).send("Gruble API kjører");
+});
+
+app.get("/prototype", (_req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
 });
 
 app.get("/api/quiz/today", async (_req, res) => {
