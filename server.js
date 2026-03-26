@@ -107,9 +107,14 @@ app.get("/api/quiz/today", async (_req, res) => {
         ? JSON.parse(quiz.questions)
         : JSON.parse(JSON.stringify(quiz.questions));
 
+    const questionsForClient = questions.map((q) => {
+      const { answer, ...rest } = q;
+      return rest;
+    });
+
     res.status(200).json({
       theme: quiz.theme,
-      questions,
+      questions: questionsForClient,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -121,3 +126,4 @@ app.get("/api/quiz/today", async (_req, res) => {
 app.listen(port, () => {
   console.log(`Gruble API listening on port ${port}`);
 });
+
