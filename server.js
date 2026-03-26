@@ -76,17 +76,41 @@ app.get("/", (_req, res) => {
   res.status(200).send("Gruble API kjører");
 });
 
-app.get("/api/quiz/today", (_req, res) => {
-  res.status(200).json({
-    theme: "Test",
-    questions: [
-      {
-        id: 1,
-        question: "Hva heter hovedstaden i Norge?",
-        options: ["Oslo", "Bergen", "Trondheim", "Stavanger"],
-      },
-    ],
+app.get("/api/quiz/today", async (_req, res) => {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    res.status(500).json({ error: "DATABASE_URL is not set" });
+    return;
+  }
+
+  const pool = new Pool({
+    connectionString: databaseUrl,
+    ssl:
+      process.env.NODE_ENV === "production"
+        ? { rejectUnauthorized: false }
+        : undefined,
   });
+
+  try {
+    const result = await pool.query(
+      "SELECT * FROM quizzes ORDER BY created_at DESC LIMIT 1"
+    );
+
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: "No quiz found" });
+      return;
+    }
+
+    const quiz = result.rows[0];
+    res.status(200).json({
+      theme: quiz.theme,
+      questions: quiz.questions,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await pool.end().catch(() => {});
+  }
 });
 
 app.listen(port, () => {
