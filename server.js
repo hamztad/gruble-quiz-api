@@ -356,6 +356,22 @@ function validateGeneratedQuiz(payload, expectedTheme) {
   return null;
 }
 
+function shuffleArray(values) {
+  const copy = [...values];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function shuffleQuestionOptions(question) {
+  return {
+    ...question,
+    options: shuffleArray(question.options),
+  };
+}
+
 app.post("/api/internal/generate-test-quiz", async (req, res) => {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -422,6 +438,11 @@ Returner KUN JSON med denne formen (ingen markdown):
       });
       return;
     }
+
+    parsed = {
+      ...parsed,
+      questions: parsed.questions.map(shuffleQuestionOptions),
+    };
 
     const databaseUrl = process.env.DATABASE_URL;
     if (!databaseUrl) {
