@@ -152,7 +152,7 @@ app.post("/api/quiz/answer", async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      res.status(200).json({ correct: false });
+      res.status(200).json({ correct: false, points: 0 });
       return;
     }
 
@@ -167,15 +167,16 @@ app.post("/api/quiz/answer", async (req, res) => {
     );
 
     if (!question || question.answer === undefined) {
-      res.status(200).json({ correct: false });
+      res.status(200).json({ correct: false, points: 0 });
       return;
     }
 
     const userAnswer = String(answer).trim().toLowerCase();
     const correctAnswer = String(question.answer).trim().toLowerCase();
     const correct = userAnswer === correctAnswer;
+    const points = correct ? 3 : 0;
 
-    res.status(200).json({ correct });
+    res.status(200).json({ correct, points });
   } catch (err) {
     res.status(500).json({ error: err.message });
   } finally {
