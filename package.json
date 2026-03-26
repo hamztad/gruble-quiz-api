@@ -13,6 +13,7 @@
   "dependencies": {
     "cors": "^2.8.6",
     "express": "^4.21.2",
+    "openai": "4.104.0",
     "pg": "^8.13.1"
   }
 }
