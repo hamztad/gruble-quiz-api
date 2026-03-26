@@ -4,6 +4,8 @@ const { Pool } = require("pg");
 const app = express();
 const port = Number(process.env.PORT) || 3000;
 
+app.use(express.json());
+
 async function setupTestTable() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -123,7 +125,64 @@ app.get("/api/quiz/today", async (_req, res) => {
   }
 });
 
+app.post("/api/quiz/answer", async (req, res) => {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    res.status(500).json({ error: "DATABASE_URL is not set" });
+    return;
+  }
+
+  const { questionId, answer } = req.body ?? {};
+  if (questionId === undefined || questionId === null || answer === undefined) {
+    res.status(400).json({ error: "Missing questionId or answer" });
+    return;
+  }
+
+  const pool = new Pool({
+    connectionString: databaseUrl,
+    ssl:
+      process.env.NODE_ENV === "production"
+        ? { rejectUnauthorized: false }
+        : undefined,
+  });
+
+  try {
+    const result = await pool.query(
+      "SELECT * FROM quizzes ORDER BY created_at DESC LIMIT 1"
+    );
+
+    if (result.rows.length === 0) {
+      res.status(200).json({ correct: false });
+      return;
+    }
+
+    const quiz = result.rows[0];
+    const questions =
+      typeof quiz.questions === "string"
+        ? JSON.parse(quiz.questions)
+        : JSON.parse(JSON.stringify(quiz.questions));
+
+    const question = questions.find(
+      (q) => Number(q.id) === Number(questionId)
+    );
+
+    if (!question || question.answer === undefined) {
+      res.status(200).json({ correct: false });
+      return;
+    }
+
+    const userAnswer = String(answer).trim().toLowerCase();
+    const correctAnswer = String(question.answer).trim().toLowerCase();
+    const correct = userAnswer === correctAnswer;
+
+    res.status(200).json({ correct });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await pool.end().catch(() => {});
+  }
+});
+
 app.listen(port, () => {
   console.log(`Gruble API listening on port ${port}`);
 });
-
