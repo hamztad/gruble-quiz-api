@@ -7,9 +7,10 @@ Mål:
 ---
 
 INPUT:
-- tekstgrunnlag
+- tekstgrunnlag (kan være tomt hvis ikke relevant)
 - spørsmål
 - riktig svar
+- brukerBegrunnelse (valgfritt, brukerens protesttekst)
 
 ---
 
