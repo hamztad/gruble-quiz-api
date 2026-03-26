@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const path = require("path");
 const { Pool } = require("pg");
+const OpenAI = require("openai");
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -199,6 +200,123 @@ app.post("/api/quiz/answer", async (req, res) => {
     res.status(500).json({ error: err.message });
   } finally {
     await pool.end().catch(() => {});
+  }
+});
+
+function validateGeneratedQuiz(payload, expectedTheme) {
+  if (!payload || typeof payload !== "object") {
+    return "Invalid payload";
+  }
+  if (typeof payload.theme !== "string" || !payload.theme.trim()) {
+    return "theme missing";
+  }
+  if (payload.theme.trim().toLowerCase() !== expectedTheme.toLowerCase()) {
+    return "theme mismatch";
+  }
+  const questions = payload.questions;
+  if (!Array.isArray(questions) || questions.length < 3 || questions.length > 5) {
+    return "questions must be an array of 3–5 items";
+  }
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+    if (!q || typeof q !== "object") {
+      return `question ${i} invalid`;
+    }
+    if (typeof q.id !== "number" || !Number.isInteger(q.id)) {
+      return `question ${i} id must be integer`;
+    }
+    if (typeof q.question !== "string" || !q.question.trim()) {
+      return `question ${i} question text missing`;
+    }
+    if (!Array.isArray(q.options) || q.options.length !== 4) {
+      return `question ${i} must have exactly 4 options`;
+    }
+    if (!q.options.every((o) => typeof o === "string" && o.trim())) {
+      return `question ${i} options must be non-empty strings`;
+    }
+    if (typeof q.answer !== "string" || !q.answer.trim()) {
+      return `question ${i} answer missing`;
+    }
+    if (!q.options.includes(q.answer)) {
+      return `question ${i} answer must match one of options`;
+    }
+  }
+  return null;
+}
+
+app.post("/api/internal/generate-test-quiz", async (req, res) => {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    res.status(500).json({ error: "OPENAI_API_KEY is not set" });
+    return;
+  }
+
+  const theme =
+    typeof req.body?.theme === "string" ? req.body.theme.trim() : "";
+  if (!theme) {
+    res.status(400).json({ error: "Missing or empty theme" });
+    return;
+  }
+
+  const openai = new OpenAI({ apiKey });
+  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+
+  const themeJson = JSON.stringify(theme);
+  const userPrompt = `Generer mellom 3 og 5 enkle flervalgsoppgaver på norsk om temaet: ${themeJson}.
+
+Hvert element i "questions" skal ha:
+- id: heltall fra 1 og oppover
+- question: spørsmålstekst
+- options: nøyaktig 4 strenger (ett riktig svar, tre plausibel feil)
+- answer: eksakt lik én av strengene i options
+
+Feltet "theme" i JSON-svaret skal være eksakt: ${themeJson}
+
+Returner KUN JSON med denne formen (ingen markdown):
+{"theme":...,"questions":[...]}`;
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Du svarer kun med gyldig JSON-objekt. Ingen forklaring, ingen markdown.",
+        },
+        { role: "user", content: userPrompt },
+      ],
+      response_format: { type: "json_object" },
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) {
+      res.status(502).json({ error: "Empty response from OpenAI" });
+      return;
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      res.status(502).json({ error: "OpenAI returned non-JSON" });
+      return;
+    }
+
+    const validationError = validateGeneratedQuiz(parsed, theme);
+    if (validationError) {
+      res.status(502).json({
+        error: "Invalid quiz shape from model",
+        detail: validationError,
+      });
+      return;
+    }
+
+    res.status(200).json(parsed);
+  } catch (err) {
+    const message =
+      err && typeof err.message === "string" ? err.message : "OpenAI failed";
+    res.status(502).json({ error: message });
   }
 });
 
