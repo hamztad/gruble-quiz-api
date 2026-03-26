@@ -312,6 +312,36 @@ Returner KUN JSON med denne formen (ingen markdown):
       return;
     }
 
+    const databaseUrl = process.env.DATABASE_URL;
+    if (!databaseUrl) {
+      res.status(500).json({ error: "DATABASE_URL is not set" });
+      return;
+    }
+
+    const pool = new Pool({
+      connectionString: databaseUrl,
+      ssl:
+        process.env.NODE_ENV === "production"
+          ? { rejectUnauthorized: false }
+          : undefined,
+    });
+
+    try {
+      await pool.query(
+        "INSERT INTO quizzes (theme, questions) VALUES ($1, $2::jsonb)",
+        [parsed.theme.trim(), JSON.stringify(parsed.questions)]
+      );
+    } catch (dbErr) {
+      const dbMessage =
+        dbErr && typeof dbErr.message === "string"
+          ? dbErr.message
+          : "Failed to save quiz";
+      res.status(500).json({ error: dbMessage });
+      return;
+    } finally {
+      await pool.end().catch(() => {});
+    }
+
     res.status(200).json(parsed);
   } catch (err) {
     const message =
