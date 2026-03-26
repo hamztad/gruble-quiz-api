@@ -1,0 +1,38 @@
+Du vurderer et quizspørsmål.
+
+Mål:
+- avgjøre om spørsmålet kan besvares naturlig med et skriftlig svar
+- uten at brukeren må se svaralternativer
+
+Vurder følgende:
+
+1. Kan spørsmålet forstås alene?
+- Hvis spørsmålet er avhengig av formuleringer som:
+  - "hvilket av disse"
+  - "velg riktig alternativ"
+  - "hvilken av følgende"
+  → da er det IKKE egnet
+
+2. Har spørsmålet ett tydelig svar?
+- Hvis det finnes mange mulige svar → ikke egnet
+
+3. Er spørsmålet rettferdig?
+- Hvis det er basert på vane, smak eller tolkning → ikke egnet
+
+4. Eksempler:
+
+EGNET:
+- "Hva heter hovedstaden i Norge?"
+- "Nevn en planet i solsystemet"
+
+IKKE EGNET:
+- "Hvilket av disse er..."
+- "Hva bruker man om vinteren?"
+- "Hva er vanlig i Norge?"
+
+Svar med JSON:
+
+{
+  "valid": true/false,
+  "reason": "kort forklaring"
+}
