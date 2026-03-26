@@ -139,7 +139,7 @@ app.post("/api/quiz/answer", async (req, res) => {
     return;
   }
 
-  const { questionId, answer } = req.body ?? {};
+  const { questionId, answer, mode, attemptNumber } = req.body ?? {};
   if (questionId === undefined || questionId === null || answer === undefined) {
     res.status(400).json({ error: "Missing questionId or answer" });
     return;
@@ -181,7 +181,18 @@ app.post("/api/quiz/answer", async (req, res) => {
     const userAnswer = String(answer).trim().toLowerCase();
     const correctAnswer = String(question.answer).trim().toLowerCase();
     const correct = userAnswer === correctAnswer;
-    const points = correct ? 3 : 0;
+
+    const answerMode = mode === "mc" ? "mc" : "written";
+    let points = 0;
+
+    if (answerMode === "mc") {
+      const attempt = Math.min(4, Math.max(1, Number(attemptNumber) || 1));
+      if (correct) {
+        points = Math.max(0, 4 - attempt);
+      }
+    } else {
+      points = correct ? 3 : 0;
+    }
 
     res.status(200).json({ correct, points });
   } catch (err) {
