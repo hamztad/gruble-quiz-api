@@ -37,9 +37,32 @@ async function setupTestTable() {
     await pool.query("INSERT INTO test (message) VALUES ($1)", [
       "Hello from Gruble",
     ]);
+    const quizCountResult = await pool.query(
+      "SELECT COUNT(*)::int AS count FROM quizzes"
+    );
+
+    if (quizCountResult.rows[0].count === 0) {
+      await pool.query(
+        "INSERT INTO quizzes (theme, questions) VALUES ($1, $2::jsonb)",
+        [
+          "Test",
+          JSON.stringify([
+            {
+              id: 1,
+              question: "Hva heter hovedstaden i Norge?",
+              options: ["Oslo", "Bergen", "Trondheim", "Stavanger"],
+              answer: "Oslo",
+            },
+          ]),
+        ]
+      );
+    }
+
     const result = await pool.query("SELECT * FROM test ORDER BY id");
+    const quizzesResult = await pool.query("SELECT * FROM quizzes ORDER BY id");
     console.log("Database connected");
     console.log("All rows in test:", result.rows);
+    console.log("All rows in quizzes:", quizzesResult.rows);
   } catch (err) {
     console.error("Database connection error:", err.message);
   } finally {
