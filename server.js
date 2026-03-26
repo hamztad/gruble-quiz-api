@@ -14,6 +14,7 @@ function readPromptFile(filename) {
 
 const WRITTEN_EVAL_SYSTEM = readPromptFile("evaluateWritten.txt");
 const GENERATE_QUIZ_SYSTEM = readPromptFile("generateQuiz.txt");
+const CHECK_QUESTION_SYSTEM = readPromptFile("checkQuestionSuitability.txt");
 
 app.use(express.json());
 app.use(cors());
@@ -153,6 +154,65 @@ async function evaluateWrittenAnswerWithOpenAI(
       (correct
         ? `Du fikk ${points} poeng.`
         : "Svaret ditt treffer ikke godt nok."),
+  };
+}
+
+async function parseJsonChatCompletion(completionPromise) {
+  const completion = await completionPromise;
+  const content = completion.choices[0]?.message?.content;
+  if (!content) {
+    throw new Error("Empty OpenAI response");
+  }
+
+  try {
+    return JSON.parse(content);
+  } catch {
+    throw new Error("OpenAI returned non-JSON");
+  }
+}
+
+async function generateQuizWithOpenAI(openai, model, theme, questionCount) {
+  const themeJson = JSON.stringify(theme);
+  const userPrompt = `Generer ${questionCount} enkle flervalgsoppgaver på norsk om temaet: ${themeJson}.
+
+Hvert element i "questions" skal ha:
+- id: heltall fra 1 og oppover
+- question: spørsmålstekst
+- options: nøyaktig 4 strenger (ett riktig svar, tre plausibel feil)
+- answer: eksakt lik én av strengene i options
+
+Feltet "theme" i JSON-svaret skal være eksakt: ${themeJson}
+
+Returner KUN JSON med denne formen (ingen markdown):
+{"theme":...,"questions":[...]}`;
+
+  const parsed = await parseJsonChatCompletion(
+    openai.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: "system",
+          content: GENERATE_QUIZ_SYSTEM,
+        },
+        { role: "user", content: userPrompt },
+      ],
+      response_format: { type: "json_object" },
+    })
+  );
+
+  const validationError = validateGeneratedQuiz(
+    parsed,
+    theme,
+    questionCount,
+    questionCount
+  );
+  if (validationError) {
+    throw new Error(`Invalid quiz shape from model: ${validationError}`);
+  }
+
+  return {
+    ...parsed,
+    questions: parsed.questions.map(shuffleQuestionOptions),
   };
 }
 
@@ -315,7 +375,7 @@ app.post("/api/quiz/answer", async (req, res) => {
   }
 });
 
-function validateGeneratedQuiz(payload, expectedTheme) {
+function validateGeneratedQuiz(payload, expectedTheme, minQuestions = 3, maxQuestions = 5) {
   if (!payload || typeof payload !== "object") {
     return "Invalid payload";
   }
@@ -326,8 +386,12 @@ function validateGeneratedQuiz(payload, expectedTheme) {
     return "theme mismatch";
   }
   const questions = payload.questions;
-  if (!Array.isArray(questions) || questions.length < 3 || questions.length > 5) {
-    return "questions must be an array of 3–5 items";
+  if (
+    !Array.isArray(questions) ||
+    questions.length < minQuestions ||
+    questions.length > maxQuestions
+  ) {
+    return `questions must be an array of ${minQuestions}–${maxQuestions} items`;
   }
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
@@ -389,60 +453,9 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
   const openai = new OpenAI({ apiKey });
   const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
-  const themeJson = JSON.stringify(theme);
-  const userPrompt = `Generer mellom 3 og 5 enkle flervalgsoppgaver på norsk om temaet: ${themeJson}.
-
-Hvert element i "questions" skal ha:
-- id: heltall fra 1 og oppover
-- question: spørsmålstekst
-- options: nøyaktig 4 strenger (ett riktig svar, tre plausibel feil)
-- answer: eksakt lik én av strengene i options
-
-Feltet "theme" i JSON-svaret skal være eksakt: ${themeJson}
-
-Returner KUN JSON med denne formen (ingen markdown):
-{"theme":...,"questions":[...]}`;
-
   try {
-    const completion = await openai.chat.completions.create({
-      model,
-      messages: [
-        {
-          role: "system",
-          content: GENERATE_QUIZ_SYSTEM,
-        },
-        { role: "user", content: userPrompt },
-      ],
-      response_format: { type: "json_object" },
-    });
-
-    const content = completion.choices[0]?.message?.content;
-    if (!content) {
-      res.status(502).json({ error: "Empty response from OpenAI" });
-      return;
-    }
-
-    let parsed;
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      res.status(502).json({ error: "OpenAI returned non-JSON" });
-      return;
-    }
-
-    const validationError = validateGeneratedQuiz(parsed, theme);
-    if (validationError) {
-      res.status(502).json({
-        error: "Invalid quiz shape from model",
-        detail: validationError,
-      });
-      return;
-    }
-
-    parsed = {
-      ...parsed,
-      questions: parsed.questions.map(shuffleQuestionOptions),
-    };
+    const questionCount = 3 + Math.floor(Math.random() * 3);
+    const parsed = await generateQuizWithOpenAI(openai, model, theme, questionCount);
 
     const databaseUrl = process.env.DATABASE_URL;
     if (!databaseUrl) {
@@ -480,6 +493,92 @@ Returner KUN JSON med denne formen (ingen markdown):
       err && typeof err.message === "string" ? err.message : "OpenAI failed";
     res.status(502).json({ error: message });
   }
+});
+
+app.post("/api/quiz/check-question", async (req, res) => {
+  const { question, questionId, theme } = req.body ?? {};
+  const questionText = typeof question === "string" ? question.trim() : "";
+  const themeText = typeof theme === "string" ? theme.trim() : "";
+
+  if (!questionText || questionId === undefined || questionId === null || !themeText) {
+    res.status(400).json({ error: "Missing question, questionId or theme" });
+    return;
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    res.status(500).json({ error: "OPENAI_API_KEY is not set" });
+    return;
+  }
+
+  const openai = new OpenAI({ apiKey });
+  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+
+  let suitability;
+  try {
+    suitability = await parseJsonChatCompletion(
+      openai.chat.completions.create({
+        model,
+        messages: [
+          {
+            role: "system",
+            content: CHECK_QUESTION_SYSTEM,
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              question: questionText,
+              questionId,
+              theme: themeText,
+            }),
+          },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.2,
+      })
+    );
+  } catch (err) {
+    const message =
+      err && typeof err.message === "string"
+        ? err.message
+        : "OpenAI suitability check failed";
+    res.status(502).json({ error: message });
+    return;
+  }
+
+  if (suitability && suitability.valid === true) {
+    res.status(200).json({
+      valid: true,
+      message: "Dette spørsmålet kan besvares skriftlig.",
+    });
+    return;
+  }
+
+  let replacementQuestion;
+  try {
+    const replacementQuiz = await generateQuizWithOpenAI(openai, model, themeText, 1);
+    replacementQuestion = replacementQuiz.questions[0];
+    if (replacementQuestion && Number.isFinite(Number(questionId))) {
+      replacementQuestion = {
+        ...replacementQuestion,
+        id: Number(questionId),
+      };
+    }
+  } catch (err) {
+    const message =
+      err && typeof err.message === "string"
+        ? err.message
+        : "Failed to generate replacement question";
+    res.status(502).json({ error: message });
+    return;
+  }
+
+  res.status(200).json({
+    valid: false,
+    message: "Du har rett, spørsmålet egner seg ikke for skrivesvar.",
+    points: 5,
+    question: replacementQuestion,
+  });
 });
 
 app.listen(port, () => {
