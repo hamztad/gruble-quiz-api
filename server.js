@@ -1,11 +1,19 @@
 const express = require("express");
 const cors = require("cors");
+const fs = require("fs");
 const path = require("path");
 const { Pool } = require("pg");
 const OpenAI = require("openai");
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
+
+function readPromptFile(filename) {
+  return fs.readFileSync(path.join(__dirname, "prompts", filename), "utf8").trim();
+}
+
+const WRITTEN_EVAL_SYSTEM = readPromptFile("evaluateWritten.txt");
+const GENERATE_QUIZ_SYSTEM = readPromptFile("generateQuiz.txt");
 
 app.use(express.json());
 app.use(cors());
@@ -85,6 +93,68 @@ app.get("/", (_req, res) => {
 app.get("/prototype", (_req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
+
+async function evaluateWrittenAnswerWithOpenAI(
+  openai,
+  model,
+  questionText,
+  correctAnswer,
+  userAnswer
+) {
+  const payload = {
+    question: questionText,
+    correctAnswer,
+    userAnswer,
+  };
+
+  const completion = await openai.chat.completions.create({
+    model,
+    messages: [
+      { role: "system", content: WRITTEN_EVAL_SYSTEM },
+      {
+        role: "user",
+        content: `Vurder brukerens svar mot spørsmålet og fasiten. Returner JSON med correct, points og feedback.\n\n${JSON.stringify(
+          payload
+        )}`,
+      },
+    ],
+    response_format: { type: "json_object" },
+    temperature: 0.25,
+  });
+
+  const content = completion.choices[0]?.message?.content;
+  if (!content) {
+    throw new Error("Empty OpenAI response");
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new Error("OpenAI returned non-JSON");
+  }
+
+  let points = Number(parsed.points);
+  if (!Number.isFinite(points)) {
+    points = 0;
+  }
+  points = Math.round(Math.max(0, Math.min(10, points)));
+
+  let correct = points > 0;
+
+  const feedback =
+    typeof parsed.feedback === "string" ? parsed.feedback.trim() : "";
+
+  return {
+    correct,
+    points,
+    feedback:
+      feedback ||
+      (correct
+        ? `Du fikk ${points} poeng.`
+        : "Svaret ditt treffer ikke godt nok."),
+  };
+}
 
 app.get("/api/quiz/today", async (_req, res) => {
   const databaseUrl = process.env.DATABASE_URL;
@@ -179,23 +249,65 @@ app.post("/api/quiz/answer", async (req, res) => {
       return;
     }
 
-    const userAnswer = String(answer).trim().toLowerCase();
-    const correctAnswer = String(question.answer).trim().toLowerCase();
-    const correct = userAnswer === correctAnswer;
-
     const answerMode = mode === "mc" ? "mc" : "written";
-    let points = 0;
 
     if (answerMode === "mc") {
+      const userAnswerNorm = String(answer).trim().toLowerCase();
+      const correctAnswerNorm = String(question.answer).trim().toLowerCase();
+      const correct = userAnswerNorm === correctAnswerNorm;
       const attempt = Math.min(4, Math.max(1, Number(attemptNumber) || 1));
+      let points = 0;
       if (correct) {
         points = Math.max(0, 4 - attempt);
       }
-    } else {
-      points = correct ? 3 : 0;
+      res.status(200).json({ correct, points });
+      return;
     }
 
-    res.status(200).json({ correct, points });
+    const userAnswerRaw = String(answer).trim();
+    if (!userAnswerRaw) {
+      res.status(200).json({
+        correct: false,
+        points: 0,
+        feedback: "Du sendte ikke inn noe svar.",
+      });
+      return;
+    }
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      res.status(500).json({ error: "OPENAI_API_KEY is not set" });
+      return;
+    }
+
+    const openai = new OpenAI({ apiKey });
+    const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+    const questionText = String(question.question ?? "").trim();
+    const correctAnswer = String(question.answer).trim();
+
+    let evaluated;
+    try {
+      evaluated = await evaluateWrittenAnswerWithOpenAI(
+        openai,
+        model,
+        questionText,
+        correctAnswer,
+        userAnswerRaw
+      );
+    } catch (evalErr) {
+      const msg =
+        evalErr && typeof evalErr.message === "string"
+          ? evalErr.message
+          : "OpenAI evaluation failed";
+      res.status(502).json({ error: msg });
+      return;
+    }
+
+    res.status(200).json({
+      correct: evaluated.correct,
+      points: evaluated.points,
+      feedback: evaluated.feedback,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   } finally {
@@ -281,8 +393,7 @@ Returner KUN JSON med denne formen (ingen markdown):
       messages: [
         {
           role: "system",
-          content:
-            "Du svarer kun med gyldig JSON-objekt. Ingen forklaring, ingen markdown.",
+          content: GENERATE_QUIZ_SYSTEM,
         },
         { role: "user", content: userPrompt },
       ],
