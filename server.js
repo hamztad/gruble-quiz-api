@@ -26,6 +26,14 @@ async function setupTestTable() {
         message TEXT
       )
     `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS quizzes (
+        id SERIAL PRIMARY KEY,
+        theme TEXT,
+        questions JSONB,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
     await pool.query("INSERT INTO test (message) VALUES ($1)", [
       "Hello from Gruble",
     ]);
