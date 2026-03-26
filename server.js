@@ -270,7 +270,7 @@ app.post("/api/quiz/answer", async (req, res) => {
     return;
   }
 
-  const { questionId, answer, mode, attemptNumber } = req.body ?? {};
+  const { questionId, answer, mode, attemptNumber, questionOverride } = req.body ?? {};
   if (questionId === undefined || questionId === null || answer === undefined) {
     res.status(400).json({ error: "Missing questionId or answer" });
     return;
@@ -300,9 +300,18 @@ app.post("/api/quiz/answer", async (req, res) => {
         ? JSON.parse(quiz.questions)
         : JSON.parse(JSON.stringify(quiz.questions));
 
-    const question = questions.find(
-      (q) => Number(q.id) === Number(questionId)
-    );
+    const overrideQuestion =
+      questionOverride &&
+      typeof questionOverride === "object" &&
+      typeof questionOverride.question === "string" &&
+      Array.isArray(questionOverride.options) &&
+      typeof questionOverride.answer === "string"
+        ? questionOverride
+        : null;
+
+    const question =
+      overrideQuestion ||
+      questions.find((q) => Number(q.id) === Number(questionId));
 
     if (!question || question.answer === undefined) {
       res.status(200).json({ correct: false, points: 0 });
