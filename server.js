@@ -1,4 +1,5 @@
 const express = require("express");
+const cors = require("cors");
 const path = require("path");
 const { Pool } = require("pg");
 
@@ -6,6 +7,7 @@ const app = express();
 const port = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
+app.use(cors());
 
 async function setupTestTable() {
   const databaseUrl = process.env.DATABASE_URL;
