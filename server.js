@@ -1,12 +1,24 @@
-const express = require("express");
+Oppdater server.js slik at vi får et nytt endpoint:
 
-const app = express();
-const port = Number(process.env.PORT) || 3000;
+GET /api/quiz/today
 
-app.get("/", (_req, res) => {
-  res.status(200).send("Gruble API kjører");
-});
+Dette endpointet skal returnere hardkodet testdata (ikke database ennå).
 
-app.listen(port, () => {
-  console.log(`Gruble API listening on port ${port}`);
-});
+Eksempel på respons:
+
+{
+  "theme": "Test",
+  "questions": [
+    {
+      "id": 1,
+      "question": "Hva heter hovedstaden i Norge?",
+      "options": ["Oslo", "Bergen", "Trondheim", "Stavanger"]
+    }
+  ]
+}
+
+Krav:
+- bruk Express
+- behold eksisterende server
+- legg kun til dette ene endpointet
+- ingen database ennå
