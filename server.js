@@ -703,11 +703,60 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
 
 app.post("/api/quiz/check-question", async (req, res) => {
   const { question, questionId, theme } = req.body ?? {};
-  const questionText = typeof question === "string" ? question.trim() : "";
-  const themeText = typeof theme === "string" ? theme.trim() : "";
+  let questionText = typeof question === "string" ? question.trim() : "";
+  let themeText = typeof theme === "string" ? theme.trim() : "";
 
-  if (!questionText || questionId === undefined || questionId === null || !themeText) {
-    res.status(400).json({ error: "Missing question, questionId or theme" });
+  if (questionId === undefined || questionId === null) {
+    res.status(400).json({ error: "Missing questionId" });
+    return;
+  }
+
+  if (!questionText || !themeText) {
+    const databaseUrl = process.env.DATABASE_URL;
+    if (!databaseUrl) {
+      res.status(400).json({ error: "Missing question or theme" });
+      return;
+    }
+
+    const pool = new Pool({
+      connectionString: databaseUrl,
+      ssl:
+        process.env.NODE_ENV === "production"
+          ? { rejectUnauthorized: false }
+          : undefined,
+    });
+
+    try {
+      const result = await pool.query(
+        "SELECT * FROM quizzes ORDER BY created_at DESC LIMIT 1"
+      );
+
+      if (result.rows.length > 0) {
+        const quiz = result.rows[0];
+        const questions =
+          typeof quiz.questions === "string"
+            ? JSON.parse(quiz.questions)
+            : JSON.parse(JSON.stringify(quiz.questions));
+
+        if (!questionText) {
+          const matchedQuestion = pickQuestionFromBody(req.body, questions);
+          questionText = String(matchedQuestion?.question ?? "").trim();
+        }
+
+        if (!themeText) {
+          themeText = String(quiz.theme ?? "").trim();
+        }
+      }
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    } finally {
+      await pool.end().catch(() => {});
+    }
+  }
+
+  if (!questionText || !themeText) {
+    res.status(400).json({ error: "Missing question or theme" });
     return;
   }
 
