@@ -15,7 +15,7 @@ function readPromptFile(filename) {
 const WRITTEN_EVAL_SYSTEM = readPromptFile("evaluateWritten.txt");
 const GENERATE_QUIZ_SYSTEM = readPromptFile("generateQuiz.txt");
 const CHECK_QUESTION_SYSTEM = readPromptFile("checkQuestionSuitability.txt");
-const PROTEST_JUDGE_SYSTEM = readPromptFile("protestJudge.txt");
+const EVALUATE_PROTEST_SYSTEM = readPromptFile("evaluateProtest.txt");
 
 app.use(express.json());
 app.use(cors());
@@ -172,65 +172,90 @@ async function parseJsonChatCompletion(completionPromise) {
   }
 }
 
-function protestJudgmentFallback(reason) {
-  return {
-    status: "avvist",
-    reason:
-      reason ||
-      "Kunne ikke vurdere protesten automatisk. Prøv igjen senere.",
-    improvedQuestion: null,
-  };
+function normalizeProtestMvpResult(raw) {
+  if (!raw || typeof raw !== "object") {
+    return {
+      status: "rejected",
+      points: 0,
+      feedback: "Kunne ikke tolke modellens svar.",
+    };
+  }
+
+  const s = String(raw.status ?? "")
+    .trim()
+    .toLowerCase();
+  let status;
+  if (
+    s === "partial" ||
+    s === "delvis" ||
+    s.includes("partial") ||
+    s.includes("delvis")
+  ) {
+    status = "partial";
+  } else if (
+    s === "approved" ||
+    s === "godkjent" ||
+    (s.includes("godkjent") && !/ikke|avvis/.test(s))
+  ) {
+    status = "approved";
+  } else if (s === "rejected" || s === "avvist" || s.includes("avvist")) {
+    status = "rejected";
+  } else {
+    status = "rejected";
+  }
+
+  const points =
+    status === "approved" ? 10 : status === "partial" ? 5 : 0;
+
+  let feedback = typeof raw.feedback === "string" ? raw.feedback.trim() : "";
+  if (!feedback) {
+    feedback =
+      status === "approved"
+        ? "Protesten ble vurdert som godkjent."
+        : status === "partial"
+          ? "Protesten ble delvis tatt til følge."
+          : "Protesten ble avvist.";
+  }
+
+  return { status, points, feedback };
 }
 
-function normalizeProtestJudgment(raw) {
-  if (!raw || typeof raw !== "object") {
-    return protestJudgmentFallback(null);
+async function fetchAnswerForProtestFromDb(questionId) {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    return "";
   }
 
-  let status = raw.status;
-  if (status !== "godkjent" && status !== "avvist") {
-    const s = String(status ?? "")
-      .trim()
-      .toLowerCase();
-    if (s.includes("godkjenn") || s.includes("godkjent") || s === "approved") {
-      status = "godkjent";
-    } else if (s.includes("avvis") || s === "rejected" || s === "avslått") {
-      status = "avvist";
-    } else {
-      status = "avvist";
+  const pool = new Pool({
+    connectionString: databaseUrl,
+    ssl:
+      process.env.NODE_ENV === "production"
+        ? { rejectUnauthorized: false }
+        : undefined,
+  });
+
+  try {
+    const result = await pool.query(
+      "SELECT * FROM quizzes ORDER BY created_at DESC LIMIT 1"
+    );
+    if (result.rows.length === 0) {
+      return "";
     }
+    const quiz = result.rows[0];
+    const questions =
+      typeof quiz.questions === "string"
+        ? JSON.parse(quiz.questions)
+        : JSON.parse(JSON.stringify(quiz.questions));
+    const q = questions.find((item) => Number(item.id) === Number(questionId));
+    if (!q || q.answer === undefined || q.answer === null) {
+      return "";
+    }
+    return String(q.answer).trim();
+  } catch {
+    return "";
+  } finally {
+    await pool.end().catch(() => {});
   }
-
-  let reason = typeof raw.reason === "string" ? raw.reason.trim() : "";
-  if (!reason) {
-    reason =
-      status === "godkjent"
-        ? "Protesten ble godkjent."
-        : "Protesten ble avvist.";
-  }
-
-  let improvedQuestion = raw.improvedQuestion;
-  if (
-    improvedQuestion === undefined ||
-    improvedQuestion === null ||
-    improvedQuestion === "null"
-  ) {
-    improvedQuestion = null;
-  } else if (typeof improvedQuestion === "string") {
-    improvedQuestion = improvedQuestion.trim() || null;
-  } else {
-    improvedQuestion = null;
-  }
-
-  if (
-    status === "godkjent" &&
-    !/bytt|annull|erstatte|fjern|oppheve/i.test(reason)
-  ) {
-    reason +=
-      " Spørsmålet bør byttes ut eller annulleres i quizen.";
-  }
-
-  return { status, reason, improvedQuestion };
 }
 
 function pickQuestionFromBody(body, questions) {
@@ -249,37 +274,6 @@ function pickQuestionFromBody(body, questions) {
     questions.find((q) => Number(q.id) === Number(questionId)) ||
     null
   );
-}
-
-async function evaluateProtestWithOpenAI(openai, model, userPayload) {
-  const completion = await openai.chat.completions.create({
-    model,
-    messages: [
-      { role: "system", content: PROTEST_JUDGE_SYSTEM },
-      {
-        role: "user",
-        content: `Vurder protesten. Returner kun JSON med nøklene status, reason og improvedQuestion.\n\n${JSON.stringify(
-          userPayload
-        )}`,
-      },
-    ],
-    response_format: { type: "json_object" },
-    temperature: 0.2,
-  });
-
-  const content = completion.choices[0]?.message?.content;
-  if (!content) {
-    return protestJudgmentFallback("Tomt svar fra modellen.");
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    return protestJudgmentFallback("Ugyldig JSON fra modellen.");
-  }
-
-  return normalizeProtestJudgment(parsed);
 }
 
 async function generateQuizWithOpenAI(openai, model, theme, questionCount) {
@@ -509,89 +503,103 @@ app.post("/api/quiz/answer", async (req, res) => {
 });
 
 app.post("/api/quiz/protest", async (req, res) => {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) {
-    res.status(500).json({ error: "DATABASE_URL is not set" });
-    return;
-  }
+  const body = req.body ?? {};
+  const questionId = body.questionId;
+  const themeText = typeof body.theme === "string" ? body.theme.trim() : "";
+  const questionText =
+    typeof body.question === "string" ? body.question.trim() : "";
+  const { options } = body;
+  const protestType =
+    typeof body.protestType === "string" ? body.protestType.trim() : "";
+  const userMessage =
+    typeof body.userMessage === "string" ? body.userMessage.trim() : "";
+  let answerText =
+    typeof body.answer === "string" ? body.answer.trim() : "";
 
-  const { questionId, context, userReason } = req.body ?? {};
   if (questionId === undefined || questionId === null) {
     res.status(400).json({ error: "Missing questionId" });
     return;
   }
-
-  const pool = new Pool({
-    connectionString: databaseUrl,
-    ssl:
-      process.env.NODE_ENV === "production"
-        ? { rejectUnauthorized: false }
-        : undefined,
-  });
-
-  try {
-    const result = await pool.query(
-      "SELECT * FROM quizzes ORDER BY created_at DESC LIMIT 1"
-    );
-
-    if (result.rows.length === 0) {
-      res
-        .status(200)
-        .json(protestJudgmentFallback("Ingen quiz funnet å protestere mot."));
-      return;
-    }
-
-    const quiz = result.rows[0];
-    const questions =
-      typeof quiz.questions === "string"
-        ? JSON.parse(quiz.questions)
-        : JSON.parse(JSON.stringify(quiz.questions));
-
-    const question = pickQuestionFromBody(req.body, questions);
-
-    if (!question || question.answer === undefined) {
-      res
-        .status(200)
-        .json(protestJudgmentFallback("Fant ikke spørsmålet i dagens quiz."));
-      return;
-    }
-
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      res.status(500).json({ error: "OPENAI_API_KEY is not set" });
-      return;
-    }
-
-    const openai = new OpenAI({ apiKey });
-    const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
-
-    const userPayload = {
-      tema: String(quiz.theme ?? "").trim(),
-      tekstgrunnlag: typeof context === "string" ? context.trim() : "",
-      sporsmal: String(question.question ?? "").trim(),
-      riktigSvar: String(question.answer).trim(),
-      alternativer: Array.isArray(question.options) ? question.options : [],
-      brukerBegrunnelse:
-        typeof userReason === "string" ? userReason.trim() : "",
-    };
-
-    let out;
-    try {
-      out = await evaluateProtestWithOpenAI(openai, model, userPayload);
-    } catch (err) {
-      out = protestJudgmentFallback(
-        err && typeof err.message === "string"
-          ? err.message
-          : "OpenAI-feil ved protestvurdering."
-      );
-    }
-
-    res.status(200).json(out);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  } finally {
-    await pool.end().catch(() => {});
+  if (!themeText) {
+    res.status(400).json({ error: "Missing theme" });
+    return;
   }
+  if (!questionText) {
+    res.status(400).json({ error: "Missing question" });
+    return;
+  }
+  if (
+    !Array.isArray(options) ||
+    options.length < 2 ||
+    !options.every((o) => typeof o === "string" && String(o).trim())
+  ) {
+    res.status(400).json({ error: "Invalid options" });
+    return;
+  }
+  if (!protestType) {
+    res.status(400).json({ error: "Missing protestType" });
+    return;
+  }
+  if (!userMessage) {
+    res.status(400).json({ error: "Missing userMessage" });
+    return;
+  }
+
+  if (!answerText) {
+    answerText = await fetchAnswerForProtestFromDb(questionId);
+  }
+  if (!answerText) {
+    res
+      .status(400)
+      .json({ error: "Missing answer (send answer or ensure quiz has it in DB)" });
+    return;
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    res.status(500).json({ error: "OPENAI_API_KEY is not set" });
+    return;
+  }
+
+  const openai = new OpenAI({ apiKey });
+  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+
+  const userPayload = {
+    theme: themeText,
+    questionId,
+    question: questionText,
+    options,
+    answer: answerText,
+    protestType,
+    userMessage,
+  };
+
+  let parsed;
+  try {
+    parsed = await parseJsonChatCompletion(
+      openai.chat.completions.create({
+        model,
+        messages: [
+          { role: "system", content: EVALUATE_PROTEST_SYSTEM },
+          {
+            role: "user",
+            content: JSON.stringify(userPayload),
+          },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.25,
+      })
+    );
+  } catch (err) {
+    const message =
+      err && typeof err.message === "string"
+        ? err.message
+        : "OpenAI protest evaluation failed";
+    res.status(502).json({ error: message });
+    return;
+  }
+
+  res.status(200).json(normalizeProtestMvpResult(parsed));
 });
 
 function getQuestionContextValidationError(questionText) {

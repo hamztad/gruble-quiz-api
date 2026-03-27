@@ -11,7 +11,7 @@
       <div class="card">
         <h1>Gruble testfrontend</h1>
         <p class="muted">
-          Enkel prototype for a teste quizflyten i nettleseren.
+          Enkel prototype for å teste quizflyten i nettleseren.
         </p>
 
         <div class="generate-bar" id="generate-bar">
@@ -28,8 +28,58 @@
         </div>
 
         <div id="app">
-          <p>Laster quiz...</p>
+          <p>Laster quiz…</p>
         </div>
+      </div>
+    </div>
+
+    <div
+      id="protest-modal"
+      class="protest-modal protest-modal--hidden"
+      aria-hidden="true"
+    >
+      <div class="protest-modal__backdrop" id="protest-modal-backdrop"></div>
+      <div
+        class="protest-modal__panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="protest-modal-title"
+      >
+        <div class="protest-modal__head">
+          <h3 id="protest-modal-title">Protest</h3>
+          <button
+            type="button"
+            class="protest-modal__close"
+            id="protest-modal-close"
+            aria-label="Lukk"
+          >
+            ×
+          </button>
+        </div>
+        <label class="protest-modal__label" for="protest-type">Protesttype</label>
+        <select id="protest-type" class="protest-modal__select">
+          <option value="Faktafeil">Faktafeil</option>
+          <option value="Flere riktige svar">Flere riktige svar</option>
+          <option value="Dårlig formulert spørsmål">Dårlig formulert spørsmål</option>
+          <option value="Dårlige eller uklare alternativer">
+            Dårlige eller uklare alternativer
+          </option>
+          <option value="Passer ikke for skrivesvar">
+            Passer ikke for skrivesvar
+          </option>
+        </select>
+        <label class="protest-modal__label" for="protest-message">Begrunnelse</label>
+        <textarea
+          id="protest-message"
+          class="protest-modal__textarea"
+          rows="4"
+          placeholder="Forklar hvorfor du protesterer…"
+        ></textarea>
+        <div class="protest-modal__actions">
+          <button type="button" class="ghost" id="protest-cancel">Avbryt</button>
+          <button type="button" class="primary" id="protest-submit">Send inn</button>
+        </div>
+        <div id="protest-output" class="protest-output" role="status"></div>
       </div>
     </div>
 

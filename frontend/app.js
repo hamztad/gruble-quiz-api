@@ -10,6 +10,26 @@ const state = {
 
 const app = document.getElementById("app");
 
+let protestTargetQuestion = null;
+
+function shuffleArray(values) {
+  const copy = [...values];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function shuffleQuizOptions(questions) {
+  return questions.map((q) => {
+    if (!q || !Array.isArray(q.options)) {
+      return q;
+    }
+    return { ...q, options: shuffleArray(q.options) };
+  });
+}
+
 function getQuestionState(questionId) {
   const key = String(questionId);
   if (!state.byId[key]) {
@@ -18,6 +38,7 @@ function getQuestionState(questionId) {
       removedOptions: [],
       answered: false,
       lastFeedback: null,
+      submittedAnswer: null,
       checkingQuestion: false,
       infoMessage: "",
       infoClass: "hint",
@@ -36,7 +57,8 @@ async function loadQuiz() {
     const data = await response.json();
 
     state.theme = data.theme || "";
-    state.questions = Array.isArray(data.questions) ? data.questions : [];
+    const rawQuestions = Array.isArray(data.questions) ? data.questions : [];
+    state.questions = shuffleQuizOptions(rawQuestions);
     state.currentIndex = 0;
     state.totalScore = 0;
     state.byId = {};
@@ -61,7 +83,7 @@ async function generateNewQuiz() {
   }
 
   btn.disabled = true;
-  statusEl.textContent = "Genererer quiz...";
+  statusEl.textContent = "Genererer quiz…";
 
   try {
     const res = await fetch(`${API_BASE}/api/internal/generate-test-quiz`, {
@@ -74,11 +96,11 @@ async function generateNewQuiz() {
       const msg =
         typeof body.error === "string"
           ? body.error
-          : res.statusText || "Foresporsel feilet";
+          : res.statusText || "Forespørsel feilet";
       throw new Error(msg);
     }
 
-    statusEl.textContent = "Laster oppdatert quiz...";
+    statusEl.textContent = "Laster oppdatert quiz…";
     const loaded = await loadQuiz();
     statusEl.textContent = loaded
       ? ""
@@ -108,26 +130,26 @@ function render() {
 
   if (qs.checkingQuestion) {
     resultClass = "result hint";
-    resultText = "Sjekker sporsmalet...";
+    resultText = "Sjekker spørsmålet…";
   } else if (qs.answered && qs.lastFeedback && qs.lastFeedback.networkError) {
     resultClass = "result wrong";
     resultText = "Kunne ikke sende inn svar.";
   } else if (qs.answered && qs.lastFeedback) {
     resultClass += qs.lastFeedback.correct ? " correct" : " wrong";
     const pts = qs.lastFeedback.points;
-    if (qs.answerMode === "written" && qs.lastFeedback.feedback) {
-      resultText = `${qs.lastFeedback.feedback} (Poeng: ${pts})`;
+    if (qs.answerMode === "written") {
+      resultText = "";
     } else {
       resultText = qs.lastFeedback.correct
-        ? `Riktig svar. Poeng for sporsmalet: ${pts}`
-        : `Feil svar. Poeng for sporsmalet: ${pts}`;
+        ? `Riktig svar. Poeng for spørsmålet: ${pts}`
+        : `Feil svar. Poeng for spørsmålet: ${pts}`;
     }
   } else if (!qs.answerMode) {
-    resultText = "Velg om du vil skrive svar eller fa alternativer.";
+    resultText = "Velg om du vil skrive svar eller få alternativer.";
     answerBlock = `
       <div class="mode-choice">
         <button type="button" id="mode-written">Skriv svar</button>
-        <button type="button" id="mode-mc">Fa alternativer</button>
+        <button type="button" id="mode-mc">Få alternativer</button>
       </div>
     `;
   } else if (qs.answerMode === "mc") {
@@ -137,10 +159,10 @@ function render() {
     if (qs.removedOptions.length > 0 && !qs.answered) {
       resultClass = "result hint";
       resultText =
-        "Feil alternativ er fjernet. Prov igjen. (3 / 2 / 1 / 0 poeng ved riktig svar.)";
+        "Feil alternativ er fjernet. Prøv igjen. (3 / 2 / 1 / 0 poeng ved riktig svar.)";
     } else {
       resultText =
-        "Velg et svaralternativ. Forste riktige gir 3 poeng, deretter 2, 1 og 0.";
+        "Velg et svaralternativ. Første riktige gir 3 poeng, deretter 2, 1 og 0.";
     }
     answerBlock = `
       <div class="options">
@@ -182,6 +204,53 @@ function render() {
     resultText = qs.infoMessage;
   }
 
+  let resultContent;
+  if (
+    qs.answered &&
+    qs.lastFeedback &&
+    qs.answerMode === "written" &&
+    !qs.lastFeedback.networkError
+  ) {
+    const feedback =
+      typeof qs.lastFeedback.feedback === "string" ? qs.lastFeedback.feedback : "";
+    const ptsRaw = qs.lastFeedback.points;
+    const ptsNum = Number(ptsRaw);
+    const ptsDisplay = Number.isFinite(ptsNum) ? ptsNum : 0;
+    const quote =
+      qs.submittedAnswer != null ? String(qs.submittedAnswer) : "";
+    const feedbackPart = feedback
+      ? `${escapeHtml(feedback)} `
+      : "";
+    resultContent = `
+      <div class="feedback-written">
+        <p class="feedback-user-heading"><strong>Ditt svar:</strong></p>
+        <p class="feedback-user-quote"><em>&quot;${escapeHtml(quote)}&quot;</em></p>
+        <div class="feedback-divider" aria-hidden="true"></div>
+        <p class="feedback-verdict">Vurdering og poeng: ${feedbackPart}<strong>${escapeHtml(
+      String(ptsDisplay)
+    )} poeng</strong></p>
+      </div>
+    `;
+  } else if (
+    qs.answered &&
+    qs.lastFeedback &&
+    qs.lastFeedback.networkError &&
+    qs.answerMode === "written"
+  ) {
+    const quote =
+      qs.submittedAnswer != null ? String(qs.submittedAnswer) : "";
+    resultContent = `
+      <div class="feedback-written">
+        <p class="feedback-user-heading"><strong>Ditt svar:</strong></p>
+        <p class="feedback-user-quote"><em>&quot;${escapeHtml(quote)}&quot;</em></p>
+        <div class="feedback-divider" aria-hidden="true"></div>
+        <p class="feedback-verdict">Kunne ikke sende inn svar.</p>
+      </div>
+    `;
+  } else {
+    resultContent = escapeHtml(resultText);
+  }
+
   app.innerHTML = `
     <div class="toolbar">
       <span class="score-pill">Totalscore: ${state.totalScore} poeng</span>
@@ -189,20 +258,21 @@ function render() {
         <button type="button" class="ghost" id="prev-button" ${
           state.currentIndex === 0 ? "disabled" : ""
         }>Forrige</button>
-        <button type="button" class="ghost" id="restart-button">Start pa nytt</button>
+        <button type="button" class="ghost" id="protest-open-button">Protester</button>
+        <button type="button" class="ghost" id="restart-button">Start på nytt</button>
       </div>
     </div>
     <p><strong>Tema:</strong> ${escapeHtml(state.theme)}</p>
-    <span class="question-number">Sporsmal ${state.currentIndex + 1} av ${
+    <span class="question-number">Spørsmål ${state.currentIndex + 1} av ${
     state.questions.length
   }</span>
     <h2>${escapeHtml(question.question)}</h2>
     ${answerBlock}
     <div id="result" class="${resultClass}">
-      ${escapeHtml(resultText)}
+      ${resultContent}
     </div>
     <div class="footer">
-      <span class="muted">Naviger nar du er klar.</span>
+      <span class="muted">Naviger når du er klar.</span>
       <button type="button" id="next-button" class="primary" ${
         qs.answered ? "" : "disabled"
       }>
@@ -210,6 +280,11 @@ function render() {
       </button>
     </div>
   `;
+
+  const protestOpenButton = document.getElementById("protest-open-button");
+  if (protestOpenButton) {
+    protestOpenButton.addEventListener("click", () => openProtestModal(question));
+  }
 
   const restartButton = document.getElementById("restart-button");
   if (restartButton) {
@@ -236,7 +311,7 @@ function render() {
         app.innerHTML = `
           <div class="toolbar">
             <span class="score-pill">Totalscore: ${state.totalScore} poeng</span>
-            <button type="button" class="ghost" id="restart-end">Start pa nytt</button>
+            <button type="button" class="ghost" id="restart-end">Start på nytt</button>
           </div>
           <p><strong>Tema:</strong> ${escapeHtml(state.theme)}</p>
           <h2>Quizen er ferdig</h2>
@@ -394,7 +469,7 @@ async function checkQuestionSuitability(question, qs) {
       qs.infoMessage =
         typeof result.error === "string"
           ? result.error
-          : "Kunne ikke sjekke sporsmalet.";
+          : "Kunne ikke sjekke spørsmålet.";
       render();
       return;
     }
@@ -404,7 +479,7 @@ async function checkQuestionSuitability(question, qs) {
       qs.infoMessage =
         typeof result.message === "string"
           ? result.message
-          : "Dette sporsmalet kan besvares skriftlig.";
+          : "Dette spørsmålet kan besvares skriftlig.";
       render();
       return;
     }
@@ -412,7 +487,7 @@ async function checkQuestionSuitability(question, qs) {
     const replacement = result.question;
     if (!replacement || typeof replacement.question !== "string") {
       qs.infoClass = "wrong";
-      qs.infoMessage = "Fikk ikke et nytt sporsmal tilbake.";
+      qs.infoMessage = "Fikk ikke et nytt spørsmål tilbake.";
       render();
       return;
     }
@@ -429,23 +504,25 @@ async function checkQuestionSuitability(question, qs) {
       removedOptions: [],
       answered: false,
       lastFeedback: null,
+      submittedAnswer: null,
       checkingQuestion: false,
       infoMessage: `${result.message} Du fikk ${
         Number(result.points) || 0
-      } poeng. Her er et nytt sporsmal.`,
+      } poeng. Her er et nytt spørsmål.`,
       infoClass: "correct",
     };
     render();
   } catch (error) {
     qs.checkingQuestion = false;
     qs.infoClass = "wrong";
-    qs.infoMessage = "Kunne ikke sjekke sporsmalet.";
+    qs.infoMessage = "Kunne ikke sjekke spørsmålet.";
     render();
   }
 }
 
 async function submitWritten(question, answer, qs) {
   const questionId = question.id;
+  qs.submittedAnswer = String(answer ?? "").trim();
   try {
     const response = await fetch(`${API_BASE}/api/quiz/answer`, {
       method: "POST",
@@ -493,6 +570,201 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+function protestStatusLabel(status) {
+  const s = String(status ?? "").toLowerCase();
+  if (s === "approved") {
+    return "Godkjent";
+  }
+  if (s === "partial") {
+    return "Delvis godkjent";
+  }
+  return "Avvist";
+}
+
+function setProtestModalVisible(visible) {
+  const modal = document.getElementById("protest-modal");
+  if (!modal) {
+    return;
+  }
+  if (visible) {
+    modal.classList.remove("protest-modal--hidden");
+    modal.setAttribute("aria-hidden", "false");
+  } else {
+    modal.classList.add("protest-modal--hidden");
+    modal.setAttribute("aria-hidden", "true");
+  }
+}
+
+function setProtestOutput(html, variant) {
+  const el = document.getElementById("protest-output");
+  if (!el) {
+    return;
+  }
+  el.className =
+    "protest-output" + (variant ? ` protest-output--${variant}` : "");
+  el.innerHTML = html;
+}
+
+function openProtestModal(question) {
+  protestTargetQuestion = question;
+  const msg = document.getElementById("protest-message");
+  const typeEl = document.getElementById("protest-type");
+  const submitBtn = document.getElementById("protest-submit");
+  if (msg) {
+    msg.value = "";
+  }
+  if (typeEl) {
+    typeEl.selectedIndex = 0;
+  }
+  if (submitBtn) {
+    submitBtn.disabled = false;
+    submitBtn.textContent = "Send inn";
+  }
+  setProtestOutput("", "");
+  setProtestModalVisible(true);
+  if (msg) {
+    msg.focus();
+  }
+}
+
+function closeProtestModal() {
+  protestTargetQuestion = null;
+  const submitBtn = document.getElementById("protest-submit");
+  if (submitBtn) {
+    submitBtn.disabled = false;
+    submitBtn.textContent = "Send inn";
+  }
+  setProtestModalVisible(false);
+}
+
+async function submitProtest() {
+  const submitBtn = document.getElementById("protest-submit");
+  const typeEl = document.getElementById("protest-type");
+  const msgEl = document.getElementById("protest-message");
+
+  if (!protestTargetQuestion) {
+    setProtestOutput(
+      "<p>Kunne ikke knytte protesten til et spørsmål. Lukk og prøv igjen.</p>",
+      "error"
+    );
+    return;
+  }
+
+  const options = Array.isArray(protestTargetQuestion.options)
+    ? protestTargetQuestion.options
+    : [];
+  if (options.length < 2) {
+    setProtestOutput(
+      "<p>Dette spørsmålet mangler alternativer som kreves for protest.</p>",
+      "error"
+    );
+    return;
+  }
+
+  const userMessage = (msgEl?.value ?? "").trim();
+  if (!userMessage) {
+    setProtestOutput("<p>Skriv en kort begrunnelse.</p>", "error");
+    return;
+  }
+
+  const protestType = (typeEl?.value ?? "").trim();
+  if (!protestType) {
+    setProtestOutput("<p>Velg protesttype.</p>", "error");
+    return;
+  }
+
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Vurderer…";
+  }
+  setProtestOutput("<p>Vurderer protesten…</p>", "loading");
+
+  let response;
+  let data = {};
+  try {
+    response = await fetch(`${API_BASE}/api/quiz/protest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        questionId: protestTargetQuestion.id,
+        theme: state.theme,
+        question: protestTargetQuestion.question,
+        options,
+        protestType,
+        userMessage,
+      }),
+    });
+    try {
+      data = await response.json();
+    } catch {
+      data = { error: "Ugyldig JSON fra serveren." };
+    }
+  } catch {
+    setProtestOutput(
+      "<p>Nettverksfeil. Sjekk tilkoblingen og prøv igjen.</p>",
+      "error"
+    );
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Send inn";
+    }
+    return;
+  }
+
+  if (!response.ok) {
+    const errText =
+      typeof data.error === "string" && data.error.trim()
+        ? data.error
+        : "Forespørselen feilet.";
+    setProtestOutput(`<p>${escapeHtml(errText)}</p>`, "error");
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Send inn";
+    }
+    return;
+  }
+
+  const status = typeof data.status === "string" ? data.status : "rejected";
+  const points = Number(data.points);
+  const ptsDisplay = Number.isFinite(points) ? points : 0;
+  const feedback =
+    typeof data.feedback === "string" ? data.feedback : "Ingen forklaring.";
+
+  state.totalScore += ptsDisplay;
+  render();
+
+  setProtestOutput(
+    `<p><strong>Status:</strong> ${escapeHtml(
+      protestStatusLabel(status)
+    )}</p>` +
+      `<p><strong>Poeng:</strong> ${escapeHtml(String(ptsDisplay))}</p>` +
+      `<p><strong>Forklaring:</strong> ${escapeHtml(feedback)}</p>`,
+    "ok"
+  );
+
+  if (submitBtn) {
+    submitBtn.disabled = false;
+    submitBtn.textContent = "Send inn";
+  }
+}
+
+function initProtestModal() {
+  const backdrop = document.getElementById("protest-modal-backdrop");
+  const closeBtn = document.getElementById("protest-modal-close");
+  const cancelBtn = document.getElementById("protest-cancel");
+  [backdrop, closeBtn, cancelBtn].forEach((el) => {
+    if (el) {
+      el.addEventListener("click", () => closeProtestModal());
+    }
+  });
+  const submitBtn = document.getElementById("protest-submit");
+  if (submitBtn) {
+    submitBtn.addEventListener("click", () => {
+      submitProtest();
+    });
+  }
+}
+
 const generateQuizButton = document.getElementById("generate-quiz-button");
 if (generateQuizButton) {
   generateQuizButton.addEventListener("click", () => {
@@ -500,4 +772,5 @@ if (generateQuizButton) {
   });
 }
 
+initProtestModal();
 loadQuiz();
