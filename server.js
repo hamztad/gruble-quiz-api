@@ -2,6 +2,9 @@ const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
+const crypto = require("crypto");
+const multer = require("multer");
 const { Pool } = require("pg");
 const OpenAI = require("openai");
 
@@ -19,6 +22,11 @@ const EVALUATE_PROTEST_SYSTEM = readPromptFile("evaluateProtest.txt");
 
 app.use(express.json());
 app.use(cors());
+
+const transcribeUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+});
 
 async function setupTestTable() {
   const databaseUrl = process.env.DATABASE_URL;
@@ -890,6 +898,75 @@ app.post("/api/quiz/check-question", async (req, res) => {
     question: replacementQuestion,
   });
 });
+
+app.post(
+  "/api/quiz/transcribe",
+  (req, res, next) => {
+    transcribeUpload.single("audio")(req, res, (err) => {
+      if (err) {
+        const msg =
+          err.code === "LIMIT_FILE_SIZE"
+            ? "Lydfilen er for stor (maks ca. 25 MB)."
+            : err.message || "Kunne ikke ta imot lydfil.";
+        res.status(400).json({ error: msg });
+        return;
+      }
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      if (!req.file || !req.file.buffer || req.file.buffer.length < 32) {
+        res.status(400).json({ error: "Mangler eller for kort lydopptak." });
+        return;
+      }
+
+      const apiKey = process.env.OPENAI_API_KEY;
+      if (!apiKey) {
+        res.status(500).json({ error: "OPENAI_API_KEY is not set" });
+        return;
+      }
+
+      const mime = String(req.file.mimetype || "");
+      let ext = "webm";
+      if (mime.includes("mp4") || mime.includes("m4a")) {
+        ext = "m4a";
+      } else if (mime.includes("mpeg") || mime.includes("mp3")) {
+        ext = "mp3";
+      } else if (mime.includes("wav")) {
+        ext = "wav";
+      }
+
+      const tmpPath = path.join(
+        os.tmpdir(),
+        `gruble-transcribe-${crypto.randomUUID()}.${ext}`
+      );
+
+      const openai = new OpenAI({ apiKey });
+
+      await fs.promises.writeFile(tmpPath, req.file.buffer);
+      try {
+        const transcription = await openai.audio.transcriptions.create({
+          file: fs.createReadStream(tmpPath),
+          model: "whisper-1",
+        });
+        const text =
+          transcription && typeof transcription.text === "string"
+            ? transcription.text.trim()
+            : "";
+        res.status(200).json({ text });
+      } finally {
+        await fs.promises.unlink(tmpPath).catch(() => {});
+      }
+    } catch (err) {
+      const message =
+        err && typeof err.message === "string"
+          ? err.message
+          : "Transkripsjon feilet.";
+      res.status(502).json({ error: message });
+    }
+  }
+);
 
 app.listen(port, () => {
   console.log(`Gruble API listening on port ${port}`);

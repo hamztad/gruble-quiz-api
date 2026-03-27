@@ -191,6 +191,16 @@ function render() {
         <textarea id="written-answer" placeholder="Skriv svaret ditt her"></textarea>
         <div class="write-actions">
           <button type="button" class="primary" id="written-submit">Send inn</button>
+          <button
+            type="button"
+            class="ghost voice-mic-btn"
+            data-voice-target="written-answer"
+            data-voice-status="written-voice-status"
+            aria-label="Tale inn svar"
+          >
+            Tale
+          </button>
+          <span class="voice-status" id="written-voice-status" aria-live="polite"></span>
           <button type="button" class="ghost" id="check-written-suitability">
             Passer ikke for skrivesvar
           </button>
@@ -570,6 +580,170 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+const VOICE_MAX_MS = 60000;
+const VOICE_MIN_BYTES = 100;
+
+let voiceRecorder = null;
+let voiceChunks = [];
+let voiceAutoStopTimer = null;
+let voiceActiveCtx = null;
+
+function setVoiceStatus(el, text, isError) {
+  if (!el) {
+    return;
+  }
+  el.textContent = text || "";
+  el.classList.toggle("voice-status--error", Boolean(isError));
+}
+
+async function uploadTranscription(blob) {
+  const ext = blob.type.includes("mp4") ? "mp4" : "webm";
+  const fd = new FormData();
+  fd.append("audio", blob, `recording.${ext}`);
+  const res = await fetch(`${API_BASE}/api/quiz/transcribe`, {
+    method: "POST",
+    body: fd,
+  });
+  let data = {};
+  try {
+    data = await res.json();
+  } catch {
+    data = {};
+  }
+  if (!res.ok) {
+    const msg =
+      typeof data.error === "string" && data.error.trim()
+        ? data.error
+        : "Transkripsjon feilet.";
+    throw new Error(msg);
+  }
+  return typeof data.text === "string" ? data.text : "";
+}
+
+function pickRecorderMimeType() {
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/mp4",
+  ];
+  for (let i = 0; i < candidates.length; i += 1) {
+    if (MediaRecorder.isTypeSupported(candidates[i])) {
+      return candidates[i];
+    }
+  }
+  return "";
+}
+
+async function toggleVoiceRecording(button) {
+  const targetId = button.getAttribute("data-voice-target");
+  const statusId = button.getAttribute("data-voice-status");
+  const field = targetId ? document.getElementById(targetId) : null;
+  const statusEl = statusId ? document.getElementById(statusId) : null;
+
+  if (!field || (field.tagName !== "TEXTAREA" && field.tagName !== "INPUT")) {
+    return;
+  }
+
+  if (typeof MediaRecorder === "undefined") {
+    setVoiceStatus(statusEl, "Opptak støttes ikke i denne nettleseren.", true);
+    return;
+  }
+
+  if (voiceRecorder && voiceRecorder.state === "recording") {
+    if (!voiceActiveCtx || voiceActiveCtx.button !== button) {
+      setVoiceStatus(statusEl, "Stopp pågående opptak først.", true);
+      return;
+    }
+    voiceRecorder.stop();
+    return;
+  }
+
+  setVoiceStatus(statusEl, "", false);
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    setVoiceStatus(statusEl, "Kunne ikke bruke mikrofon.", true);
+    return;
+  }
+
+  const mimeType = pickRecorderMimeType();
+  const mr = mimeType
+    ? new MediaRecorder(stream, { mimeType })
+    : new MediaRecorder(stream);
+
+  const ctx = { button, statusEl, field, stream, mr };
+  voiceActiveCtx = ctx;
+  voiceChunks = [];
+  voiceRecorder = mr;
+
+  mr.addEventListener("dataavailable", (e) => {
+    if (e.data && e.data.size > 0) {
+      voiceChunks.push(e.data);
+    }
+  });
+
+  mr.addEventListener("stop", async () => {
+    ctx.stream.getTracks().forEach((t) => t.stop());
+    if (voiceAutoStopTimer) {
+      clearTimeout(voiceAutoStopTimer);
+      voiceAutoStopTimer = null;
+    }
+    ctx.button.classList.remove("voice-mic-btn--recording");
+    voiceRecorder = null;
+    voiceActiveCtx = null;
+
+    const blob = new Blob(voiceChunks, {
+      type: ctx.mr.mimeType || "audio/webm",
+    });
+    voiceChunks = [];
+
+    if (blob.size < VOICE_MIN_BYTES) {
+      setVoiceStatus(ctx.statusEl, "Ingen lyd fanget. Prøv igjen.", true);
+      return;
+    }
+
+    setVoiceStatus(ctx.statusEl, "Behandler...");
+    ctx.button.disabled = true;
+
+    try {
+      const text = await uploadTranscription(blob);
+      const cur = String(ctx.field.value || "").trim();
+      const incoming = String(text || "").trim();
+      ctx.field.value =
+        cur && incoming ? `${cur} ${incoming}` : incoming || cur;
+      setVoiceStatus(ctx.statusEl, "");
+    } catch (err) {
+      const msg =
+        err && typeof err.message === "string" ? err.message : "Feil.";
+      setVoiceStatus(ctx.statusEl, msg, true);
+    } finally {
+      ctx.button.disabled = false;
+    }
+  });
+
+  mr.start(200);
+  ctx.button.classList.add("voice-mic-btn--recording");
+  setVoiceStatus(ctx.statusEl, "Lytter...");
+  voiceAutoStopTimer = setTimeout(() => {
+    if (voiceRecorder && voiceRecorder.state === "recording") {
+      voiceRecorder.stop();
+    }
+  }, VOICE_MAX_MS);
+}
+
+function initVoiceInputDelegation() {
+  document.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-voice-target]");
+    if (!btn || btn.disabled) {
+      return;
+    }
+    ev.preventDefault();
+    void toggleVoiceRecording(btn);
+  });
+}
+
 function protestStatusLabel(status) {
   const s = String(status ?? "").toLowerCase();
   if (s === "approved") {
@@ -773,4 +947,5 @@ if (generateQuizButton) {
 }
 
 initProtestModal();
+initVoiceInputDelegation();
 loadQuiz();

@@ -34,6 +34,18 @@ Viktig vurdering:
 - Ikke godkjenn svake eller irrelevante protester.
 - Bruker må ha en reell faglig eller logisk begrunnelse.
 
+6. Språklig kvalitet
+
+- Hvis spørsmålet er forståelig, men språklig mindre naturlig eller kunne vært formulert bedre:
+  - vurder som "partial"
+  - ikke "rejected"
+
+- Eksempler:
+  - "Hva er hovedstaden i Japan?" → forståelig, men mindre naturlig → partial
+  - "Hva heter hovedstaden i Japan?" → bedre formulering
+
+- Kun små språklige forbedringer skal ikke gi full godkjenning, men kan gi delvis godkjenning
+
 Returner KUN gyldig JSON:
 
 {

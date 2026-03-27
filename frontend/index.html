@@ -21,6 +21,20 @@
             placeholder="Tema (f.eks. verdensrommet)"
             aria-label="Tema for ny quiz"
           />
+          <button
+            type="button"
+            class="ghost voice-mic-btn"
+            data-voice-target="generate-theme-input"
+            data-voice-status="generate-theme-voice-status"
+            aria-label="Tale inn tema"
+          >
+            Tale
+          </button>
+          <span
+            class="voice-status voice-status--bar"
+            id="generate-theme-voice-status"
+            aria-live="polite"
+          ></span>
           <button type="button" class="primary" id="generate-quiz-button">
             Generer ny quiz
           </button>
@@ -75,6 +89,22 @@
           rows="4"
           placeholder="Forklar hvorfor du protesterer…"
         ></textarea>
+        <div class="protest-modal__voice-row">
+          <button
+            type="button"
+            class="ghost voice-mic-btn"
+            data-voice-target="protest-message"
+            data-voice-status="protest-voice-status"
+            aria-label="Tale inn begrunnelse"
+          >
+            Tale
+          </button>
+          <span
+            class="voice-status"
+            id="protest-voice-status"
+            aria-live="polite"
+          ></span>
+        </div>
         <div class="protest-modal__actions">
           <button type="button" class="ghost" id="protest-cancel">Avbryt</button>
           <button type="button" class="primary" id="protest-submit">Send inn</button>

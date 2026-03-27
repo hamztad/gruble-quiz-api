@@ -214,6 +214,53 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+  align-items: center;
+}
+
+.voice-mic-btn {
+  flex-shrink: 0;
+}
+
+.voice-mic-btn--recording {
+  background: #fef2f2 !important;
+  border-color: #f87171 !important;
+  color: #b91c1c !important;
+  font-weight: 600;
+}
+
+.voice-status {
+  font-size: 14px;
+  color: #6b7280;
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.voice-status--error {
+  color: #b91c1c;
+}
+
+.voice-status--bar {
+  flex-basis: 100%;
+}
+
+@media (min-width: 560px) {
+  .voice-status--bar {
+    flex-basis: auto;
+    flex: 0 1 auto;
+    max-width: 200px;
+  }
+}
+
+.protest-modal__voice-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.protest-modal__voice-row .voice-status {
+  flex: 1 1 auto;
 }
 
 .option-removed {
