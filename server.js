@@ -286,6 +286,10 @@ async function generateQuizWithOpenAI(openai, model, theme, questionCount) {
   const themeJson = JSON.stringify(theme);
   const userPrompt = `Generer ${questionCount} enkle flervalgsoppgaver på norsk om temaet: ${themeJson}.
 
+Spørsmålene må være selvstendige.
+Brukeren skal kunne forstå og besvare hvert spørsmål uten artikkel, ingress, tekstutdrag eller annen skjult kontekst.
+Ikke inkluder felt som "text", "context", "passage" eller lignende.
+
 Hvert element i "questions" skal ha:
 - id: heltall fra 1 og oppover
 - question: spørsmålstekst
@@ -297,34 +301,43 @@ Feltet "theme" i JSON-svaret skal være eksakt: ${themeJson}
 Returner KUN JSON med denne formen (ingen markdown):
 {"theme":...,"questions":[...]}`;
 
-  const parsed = await parseJsonChatCompletion(
-    openai.chat.completions.create({
-      model,
-      messages: [
-        {
-          role: "system",
-          content: GENERATE_QUIZ_SYSTEM,
-        },
-        { role: "user", content: userPrompt },
-      ],
-      response_format: { type: "json_object" },
-    })
-  );
+  let lastValidationError = null;
 
-  const validationError = validateGeneratedQuiz(
-    parsed,
-    theme,
-    questionCount,
-    questionCount
-  );
-  if (validationError) {
-    throw new Error(`Invalid quiz shape from model: ${validationError}`);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const parsed = await parseJsonChatCompletion(
+      openai.chat.completions.create({
+        model,
+        messages: [
+          {
+            role: "system",
+            content: GENERATE_QUIZ_SYSTEM,
+          },
+          { role: "user", content: userPrompt },
+        ],
+        response_format: { type: "json_object" },
+      })
+    );
+
+    const validationError = validateGeneratedQuiz(
+      parsed,
+      theme,
+      questionCount,
+      questionCount
+    );
+    if (validationError) {
+      lastValidationError = validationError;
+      continue;
+    }
+
+    return {
+      ...parsed,
+      questions: parsed.questions.map(shuffleQuestionOptions),
+    };
   }
 
-  return {
-    ...parsed,
-    questions: parsed.questions.map(shuffleQuestionOptions),
-  };
+  throw new Error(
+    `Invalid quiz shape from model: ${lastValidationError || "unknown validation error"}`
+  );
 }
 
 app.get("/api/quiz/today", async (_req, res) => {
@@ -581,6 +594,33 @@ app.post("/api/quiz/protest", async (req, res) => {
   }
 });
 
+function getQuestionContextValidationError(questionText) {
+  const text = String(questionText ?? "").trim();
+  if (!text) {
+    return "question text missing";
+  }
+
+  if (
+    /\b(i|ifølge|ifolge)\s+(teksten|artikkelen|saken|historien|innlegget|beskrivelsen|avsnittet|kilden)\b/i.test(
+      text
+    ) ||
+    /\b(denne teksten|denne artikkelen|denne saken|teksten over|artikkelen over)\b/i.test(
+      text
+    )
+  ) {
+    return "must not refer to hidden source text";
+  }
+
+  if (
+    /^(hva er spesielt med|hvor lenge hadde)\s+/i.test(text) &&
+    /\b(den|det|de|denne|dette|disse|han|hun)\b/i.test(text)
+  ) {
+    return "must introduce the subject directly in the question";
+  }
+
+  return null;
+}
+
 function validateGeneratedQuiz(payload, expectedTheme, minQuestions = 3, maxQuestions = 5) {
   if (!payload || typeof payload !== "object") {
     return "Invalid payload";
@@ -609,6 +649,13 @@ function validateGeneratedQuiz(payload, expectedTheme, minQuestions = 3, maxQues
     }
     if (typeof q.question !== "string" || !q.question.trim()) {
       return `question ${i} question text missing`;
+    }
+    if (typeof q.text === "string" && q.text.trim()) {
+      return `question ${i} must not include hidden source text`;
+    }
+    const questionContextError = getQuestionContextValidationError(q.question);
+    if (questionContextError) {
+      return `question ${i} ${questionContextError}`;
     }
     if (!Array.isArray(q.options) || q.options.length !== 4) {
       return `question ${i} must have exactly 4 options`;

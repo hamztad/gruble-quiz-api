@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="no">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gruble Prototype</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>Gruble testfrontend</h1>
+        <p class="muted">
+          Enkel prototype for a teste quizflyten i nettleseren.
+        </p>
+
+        <div class="generate-bar" id="generate-bar">
+          <input
+            type="text"
+            id="generate-theme-input"
+            placeholder="Tema (f.eks. verdensrommet)"
+            aria-label="Tema for ny quiz"
+          />
+          <button type="button" class="primary" id="generate-quiz-button">
+            Generer ny quiz
+          </button>
+          <span class="muted" id="generate-status" role="status"></span>
+        </div>
+
+        <div id="app">
+          <p>Laster quiz...</p>
+        </div>
+      </div>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
