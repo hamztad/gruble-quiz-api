@@ -1,3 +1,3 @@
 # gruble-quiz-api
 eternal quiz
-Test deploy fra Cursor
+Test SSH deploy
