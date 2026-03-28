@@ -305,8 +305,8 @@ function pickQuestionFromBody(body, questions) {
 }
 
 /**
- * Nytt: defensiv sjekk for flerords navn — brukes til oppslag (3 ord) og til valgfri split
- * (split aktiveres kun for nøyaktig to ord, se maybeBuildThemeLookupSupport).
+ * Nytt: defensiv sjekk for 2–3 ords navn — brukes til vague-oppslag og til split-reserve
+ * (kun når fraseoppslag er tomt og tema fortsatt matcher denne profilen).
  * Krever stor forbokstav per ord, kun bokstaver (Unicode), rimelig ordlengde.
  */
 function themeLooksLikeMultiWordName(theme) {
@@ -709,7 +709,7 @@ async function buildSplitNameLookupContext(parts) {
   };
 }
 
-/** Nytt: ingen brukbar tekst fra frase-oppslag → forsøk split (konservativt). */
+/** Nytt: fraseoppslag ga ingen brukbar tekst → split kan vurderes som reserve (kun for navn). */
 function isWeakThemeLookupContext(lookup) {
   return !String(lookup?.context ?? "").trim();
 }
@@ -732,6 +732,7 @@ async function maybeBuildThemeLookupSupport(theme) {
   }
 
   try {
+    /** Alltid hele frasen først; split bare reserve hvis tom kontekst og navn-lignende 2–3 ord. */
     let lookup = await buildWikipediaLookupContext(theme);
     let split = false;
     let splitParts = [];
@@ -741,8 +742,7 @@ async function maybeBuildThemeLookupSupport(theme) {
       themeLooksLikeMultiWordName(theme)
     ) {
       const parts = String(theme).trim().split(/\s+/).filter(Boolean);
-      /** Kun to-ords navn splittes; tre-ords frase behandles som helhet (ellers feil intensjon). */
-      if (parts.length === 2) {
+      if (parts.length >= 2 && parts.length <= 3) {
         const merged = await buildSplitNameLookupContext(parts);
         if (merged.context.trim()) {
           lookup = merged;
@@ -817,7 +817,7 @@ Hvis faktastøtten ikke støtter en spesifikk retning, hold spørsmålene genere
     lookup?.split
       ? `
 
-Nytt (to-ords navn splittet, oppslag per del): Faktastøtten er gruppert som [NAVN 1], [NAVN 2] osv. Hver gruppe gjelder kun det navnet — ikke bland fakta mellom grupper.
+Nytt (navn splittet som reserve etter svakt fraseoppslag, oppslag per del): Faktastøtten er gruppert som [NAVN 1], [NAVN 2] osv. Hver gruppe gjelder kun det navnet — ikke bland fakta mellom grupper.
 Lag spørsmål som varierer mellom navnedelene når flere grupper har stoff; bruk fortsatt bare innhold som står eksplisitt i den aktuelle gruppen.
 Unngå formuleringer som «vanlig», «populær», «kjent for» og nære varianter.`
       : ""
