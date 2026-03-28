@@ -783,13 +783,20 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
 
   const cohesive = isQuizCohesiveForSharedImage(theme, questions);
   log(`cohesiveForSharedImage=${cohesive ? "true" : "false"}`);
+  const sharedQuestionContext = Array.isArray(questions)
+    ? questions
+        .map((q) => String(q?.question ?? "").trim())
+        .filter(Boolean)
+        .join(" ")
+        .slice(0, 500)
+    : "";
 
   if (cohesive && primaryQuery) {
     const { wiki, pix, merged } =
       await fetchImageCandidatesFromBothSources(primaryQuery);
     const { candidate: best, meta: pickMeta } = pickBestImageCandidateWithScore(
       merged,
-      { theme, questionText: "" }
+      { theme, questionText: sharedQuestionContext, minScore: 1 }
     );
     const candidatesCount = merged.length;
     log(
@@ -829,16 +836,11 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
     }
     if (candidatesCount > 0) {
       log(
-        "relevance=no candidate met minScore (shared) scoringUsesThemeOnly=true defaultMinScore=2"
+        `relevance=no candidate met minScore (shared) questionContextChars=${sharedQuestionContext.length} minScore=1`
       );
     }
     log("sharedImage assigned=false");
-    log("mode=none (cohesive, no acceptable shared hit)");
-    const bare = questions.map((q) => {
-      const { image, ...rest } = q;
-      return rest;
-    });
-    return { questions: bare, sharedImage: null };
+    log("mode=shared-fallback-to-per-question");
   }
 
   log(`mode=per-question cohesive=${cohesive ? "true" : "false"}`);

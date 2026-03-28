@@ -1143,7 +1143,7 @@ async function generateQuizWithOpenAI(
       ? memoryOptions.pool
       : null;
 
-  const maxTotalModelCalls = 18;
+  const maxTotalModelCalls = 8;
 
   for (let callIdx = 0; callIdx < maxTotalModelCalls; callIdx += 1) {
     if (accumulated.length >= questionCount) {
@@ -1178,7 +1178,7 @@ async function generateQuizWithOpenAI(
     const validationError = validateGeneratedQuiz(
       parsed,
       theme,
-      need,
+      1,
       need,
       lookup,
       subjectMode
