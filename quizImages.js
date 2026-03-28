@@ -358,11 +358,46 @@ async function searchPixabayImageCandidates(query, limit = 6) {
 }
 
 /**
- * Henter Wikimedia og Pixabay parallelt (samme søk).
- * @param {string} query
- * @returns {Promise<{ wiki: QuizImageCandidate[], pix: QuizImageCandidate[] }>}
+ * Sikrer felles QuizImageCandidate-form; ugyldige droppes.
+ * @param {unknown} c
+ * @returns {QuizImageCandidate | null}
  */
-async function fetchWikiThenPixCandidates(query) {
+function normalizeQuizImageCandidate(c) {
+  if (!c || typeof c !== "object") {
+    return null;
+  }
+  const url = String(c.url ?? "").trim();
+  if (!url || !/^https:\/\//i.test(url)) {
+    return null;
+  }
+  const source = c.source;
+  if (source !== "wikimedia" && source !== "pixabay") {
+    return null;
+  }
+  const credit = String(c.credit ?? "").trim();
+  if (!credit) {
+    return null;
+  }
+  return {
+    url,
+    title: String(c.title ?? "").trim().slice(0, 200),
+    source,
+    credit,
+    width: typeof c.width === "number" ? c.width : undefined,
+    height: typeof c.height === "number" ? c.height : undefined,
+    pageUrl:
+      typeof c.pageUrl === "string" && c.pageUrl.trim()
+        ? c.pageUrl.trim()
+        : undefined,
+  };
+}
+
+/**
+ * Parallellsøk Wikimedia + Pixabay, samme søkestreng — kandidater normalisert til felles struktur.
+ * @param {string} query
+ * @returns {Promise<{ wiki: QuizImageCandidate[], pix: QuizImageCandidate[], merged: QuizImageCandidate[] }>}
+ */
+async function fetchImageCandidatesFromBothSources(query) {
   const q = String(query ?? "")
     .trim()
     .replace(/\s+/g, " ")
@@ -370,10 +405,10 @@ async function fetchWikiThenPixCandidates(query) {
   if (!q || q.length < 2) {
     logWikimedia(`query="" rawResults=0 reason=skippedShortQueryAtBatch`);
     logPixabay(`query="" results=0 reason=skippedShortQueryAtBatch`);
-    return { wiki: [], pix: [] };
+    return { wiki: [], pix: [], merged: [] };
   }
 
-  const [wiki, pix] = await Promise.all([
+  const [wikiRaw, pixRaw] = await Promise.all([
     searchWikimediaImageCandidates(q, 8).catch((e) => {
       logWikimedia(
         `filteredResults=0 reason=unhandledError msg=${JSON.stringify(String(e?.message || e))}`
@@ -387,7 +422,29 @@ async function fetchWikiThenPixCandidates(query) {
       return [];
     }),
   ]);
-  return { wiki, pix };
+
+  /** @type {QuizImageCandidate[]} */
+  const wiki = [];
+  for (let i = 0; i < wikiRaw.length; i += 1) {
+    const n = normalizeQuizImageCandidate(wikiRaw[i]);
+    if (n) {
+      wiki.push(n);
+    }
+  }
+  /** @type {QuizImageCandidate[]} */
+  const pix = [];
+  for (let j = 0; j < pixRaw.length; j += 1) {
+    const n = normalizeQuizImageCandidate(pixRaw[j]);
+    if (n) {
+      pix.push(n);
+    }
+  }
+
+  const merged = [...wiki, ...pix];
+  console.log(
+    `[quiz image][merge] query=${JSON.stringify(q)} candidates wiki=${wiki.length} pixabay=${pix.length} merged=${merged.length}`
+  );
+  return { wiki, pix, merged };
 }
 
 /**
@@ -413,25 +470,33 @@ function getImageSourceBonusForCandidate(source, theme) {
   }
 
   if (
-    /\b(historie|historisk|geografi|krig|krigen|slott|kirke|katedral|museum|monument|viking|middelalder|århundre|århundrer|fylke|kommune|nasjonal|unesco|storting|regjering|president|statsminister|kong|dronning|keiser|biografi|født|død)\b/i.test(
+    /\b(historie|historisk|geografi|krig|krigen|slott|kirke|katedral|museum|monument|viking|middelalder|århundre|århundrer|fylke|kommune|nasjonal|unesco|storting|regjering|president|statsminister|kong|dronning|keiser|biografi|født|død|person|personer|skuespiller|forfatter|kunstner|musiker|vitenskapsmann|oppfinner|politiker)\b/i.test(
       t
     )
   ) {
     wikiBonus += 1.5;
-    wikiReasons.push("konkret sted/historie/personfelt (+1.5 mot Wikimedia)");
+    wikiReasons.push("sted/historie/person (+1.5 Wikimedia-tilt)");
   }
 
   wikiBonus = Math.min(wikiBonus, 3);
 
   if (words.length === 1 && words[0].length >= 3 && words[0].length <= 16) {
     pixBonus += 1.5;
-    pixReasons.push("ettords tema (+1.5 mot Pixabay-dekor)");
+    pixReasons.push("ettords tema (+1.5 Pixabay-tilt)");
   }
   if (words.length === 1 && words[0].length >= 3 && words[0].length <= 8) {
     pixBonus += 0.5;
-    pixReasons.push("kort ettords tema (+0.5 mot Pixabay)");
+    pixReasons.push("kort ettords tema (+0.5 Pixabay)");
   }
-  pixBonus = Math.min(pixBonus, 2.5);
+  if (
+    /\b(natur|landskap|solnedgang|stemning|hobby|matlaging|mat\b|baking|blomster|dekorasjon|farger|abstrakt|bakgrunn|tekstur|mønster|sesong|sommer|vinter|vår|høst|sport|trening|velvære|feiring)\b/i.test(
+      t
+    )
+  ) {
+    pixBonus += 1.5;
+    pixReasons.push("generelt/dekorativt tema (+1.5 Pixabay-tilt)");
+  }
+  pixBonus = Math.min(pixBonus, 3);
 
   if (source === "wikimedia") {
     return { bonus: wikiBonus, reasons: wikiReasons };
@@ -443,13 +508,13 @@ function getImageSourceBonusForCandidate(source, theme) {
 }
 
 /**
- * Samler kandidater fra begge kilder (Wikimedia først i arrayet, deretter Pixabay — kun for stabil rekkefølge).
+ * Søk begge kilder parallelt; returnerer normalisert, flettet kandidatliste.
  * @param {string} query
  * @returns {Promise<QuizImageCandidate[]>}
  */
 async function findImageCandidates(query) {
-  const { wiki, pix } = await fetchWikiThenPixCandidates(query);
-  return [...wiki, ...pix];
+  const { merged } = await fetchImageCandidatesFromBothSources(query);
+  return merged;
 }
 
 function normalizeForImageMatch(s) {
@@ -574,10 +639,31 @@ function pickBestImageCandidateWithScore(candidates, context = {}) {
     if (b.base !== a.base) {
       return b.base - a.base;
     }
-    return String(a.c.source).localeCompare(String(b.c.source));
+    /* Ingen kildefavoritt ved uavgjort — bruk innhold (tittel), ikke source-navn. */
+    return String(a.c.title ?? "").localeCompare(String(b.c.title ?? ""), "nb", {
+      sensitivity: "base",
+    });
   });
   const top = ranked[0];
   const second = ranked[1];
+  const margin =
+    second != null ? Number((top.total - second.total).toFixed(2)) : null;
+  const winnerReasonParts = [
+    `kilde=${top.c.source}`,
+    `total=${top.total} (relevans=${top.base} + kildebonus=${top.bonus})`,
+  ];
+  if (top.reasons.length) {
+    winnerReasonParts.push(`kildebonus: ${top.reasons.join(", ")}`);
+  }
+  if (second != null) {
+    winnerReasonParts.push(
+      `foran nr.2: ${second.c.source} total=${second.total}${margin != null && margin > 0 ? ` (margin ${margin})` : ""}`
+    );
+  } else {
+    winnerReasonParts.push("ingen annen godkjent kandidat");
+  }
+  const winnerReason = winnerReasonParts.join(" | ");
+
   return {
     candidate: top.c,
     meta: {
@@ -585,10 +671,13 @@ function pickBestImageCandidateWithScore(candidates, context = {}) {
       sourceBonus: top.bonus,
       totalScore: top.total,
       bonusReasons: top.reasons,
+      winnerReason,
       runnerUp: second
         ? {
             source: second.c.source,
             totalScore: second.total,
+            baseScore: second.base,
+            sourceBonus: second.bonus,
             titleSnippet: String(second.c.title ?? "").slice(0, 60),
           }
         : null,
@@ -691,8 +780,8 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
   const cohesive = isQuizCohesiveForSharedImage(theme, questions);
 
   if (cohesive && primaryQuery) {
-    const { wiki, pix } = await fetchWikiThenPixCandidates(primaryQuery);
-    const merged = [...wiki, ...pix];
+    const { wiki, pix, merged } =
+      await fetchImageCandidatesFromBothSources(primaryQuery);
     const { candidate: best, meta: pickMeta } = pickBestImageCandidateWithScore(
       merged,
       { theme, questionText: "" }
@@ -706,9 +795,10 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
       log(
         `picked scores base=${pickMeta.baseScore} sourceBonus=${pickMeta.sourceBonus} total=${pickMeta.totalScore} reasons=${JSON.stringify(pickMeta.bonusReasons.join("; ") || "ingen kildebonus")}`
       );
+      log(`winner=${JSON.stringify(pickMeta.winnerReason)}`);
       if (pickMeta.runnerUp) {
         log(
-          `runnerUp source=${pickMeta.runnerUp.source} total=${pickMeta.runnerUp.totalScore} title=${JSON.stringify(pickMeta.runnerUp.titleSnippet)}`
+          `runnerUp source=${pickMeta.runnerUp.source} total=${pickMeta.runnerUp.totalScore} base=${pickMeta.runnerUp.baseScore} bonus=${pickMeta.runnerUp.sourceBonus} title=${JSON.stringify(pickMeta.runnerUp.titleSnippet)}`
         );
       }
     }
@@ -758,8 +848,7 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
       out.push(rest);
       continue;
     }
-    const { wiki, pix } = await fetchWikiThenPixCandidates(qry);
-    const merged = [...wiki, ...pix];
+    const { wiki, pix, merged } = await fetchImageCandidatesFromBothSources(qry);
     const { candidate: best, meta: pickMeta } = pickBestImageCandidateWithScore(
       merged,
       { theme, questionText: String(qq?.question ?? "") }
@@ -773,6 +862,12 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
       log(
         `picked scores base=${pickMeta.baseScore} sourceBonus=${pickMeta.sourceBonus} total=${pickMeta.totalScore} reasons=${JSON.stringify(pickMeta.bonusReasons.join("; ") || "ingen kildebonus")} questionIndex=${i}`
       );
+      log(`winner=${JSON.stringify(pickMeta.winnerReason)} questionIndex=${i}`);
+      if (pickMeta.runnerUp) {
+        log(
+          `runnerUp source=${pickMeta.runnerUp.source} total=${pickMeta.runnerUp.totalScore} base=${pickMeta.runnerUp.baseScore} bonus=${pickMeta.runnerUp.sourceBonus} title=${JSON.stringify(pickMeta.runnerUp.titleSnippet)} questionIndex=${i}`
+        );
+      }
     }
     if (best) {
       log(`pickedTitle=${JSON.stringify(best.title)}`);

@@ -1,18 +1,14 @@
 /**
- * quizMemory.js — første versjon av spørsmålsminne / duplikatkontroll.
+ * quizMemory.js — spørsmålsminne / duplikatkontroll i Postgres.
  *
- * Lagrer normaliserte spørsmål i Postgres og sammenligner nye spørsmål mot historikk
- * med enkel normalisering + konservativ tekstlikhet (ingen embeddings).
- *
- * Moduser:
- * - daily: strengere — flere treff regnes som duplikater.
- * - custom: mer tolerant — stort sett eksakt / nesten identisk etter normalisering.
+ * Lagrer hvert brukte spørsmål som egen rad (tema, spørsmål, svar, valgfri fact_key).
+ * Sammenligner nye spørsmål mot historikk med normalisering + konservativ tekstlikhet.
  */
 
-/** Maks antall historiske rader vi henter for sammenligning (ytelse). */
+/** Maks antall historiske rader for sammenligning. */
 const MEMORY_HISTORY_LIMIT = 1200;
 
-/** Maks tegn i normalisert streng for Levenshtein (unngå tunge kalkulasjoner). */
+/** Maks tegn i normalisert streng for Levenshtein på spørsmål. */
 const LEV_MAX_LEN = 320;
 
 const QUIZ_MEMORY_MODE = {
@@ -20,9 +16,15 @@ const QUIZ_MEMORY_MODE = {
   CUSTOM: "custom",
 };
 
+/** Logget som avvisningsårsak (samme navn i histogram). */
+const MEMORY_REJECT_REASON = {
+  FACT_KEY: "fact_key",
+  QUESTION_ANSWER: "question_answer",
+  QUESTION_TEXT: "question_text",
+};
+
 /**
- * Normaliserer spørsmålstekst for sammenligning (duplikatkontroll).
- * Nytt: lowercase, trim, sammenlegging av mellomrom, fjerning av tegnsetting.
+ * Normaliserer spørsmål og svar for sammenligning.
  */
 function normalizeQuizQuestionText(text) {
   let s = String(text ?? "")
@@ -35,12 +37,46 @@ function normalizeQuizQuestionText(text) {
   return s;
 }
 
+const normalizeQuizAnswerText = normalizeQuizQuestionText;
+
 function normalizeThemeForMemory(theme) {
   return String(theme ?? "")
     .toLowerCase()
     .trim()
     .replace(/\s+/g, " ")
     .slice(0, 200);
+}
+
+/**
+ * Normaliserer valgfri fact_key fra modellen til sammenlignbar nøkkel (kun backend).
+ * Forventer segmenter adskilt med |, f.eks. norge|hovedstad|oslo
+ * @returns {string} tom streng hvis ugyldig / tom
+ */
+function normalizeFactKey(raw) {
+  if (raw == null) {
+    return "";
+  }
+  const fold = String(raw)
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .replace(/æ/g, "ae")
+    .replace(/ø/g, "o")
+    .replace(/å/g, "a");
+  const segments = fold
+    .split("|")
+    .map((seg) => seg.replace(/[^a-z0-9]+/g, "").trim())
+    .filter(Boolean);
+  if (segments.length < 2 || segments.length > 6) {
+    return "";
+  }
+  for (let i = 0; i < segments.length; i += 1) {
+    if (segments[i].length < 1 || segments[i].length > 40) {
+      return "";
+    }
+  }
+  return segments.join("|");
 }
 
 function logMemory(line) {
@@ -82,9 +118,6 @@ function tokenSetForOverlap(normalized) {
     .filter((w) => w.length >= 3);
 }
 
-/**
- * Enkel Jaccard-likhet på ord (kun for tydelig overlapp, konservativ bruk).
- */
 function tokenJaccardSimilarity(aNorm, bNorm) {
   const ta = tokenSetForOverlap(aNorm);
   const tb = tokenSetForOverlap(bNorm);
@@ -103,10 +136,6 @@ function tokenJaccardSimilarity(aNorm, bNorm) {
   return union === 0 ? 0 : inter / union;
 }
 
-/**
- * Sjekk om to normaliserte spørsmål er «for like» gitt modus.
- * Nytt: kombinasjon av eksakt match, begrenset Levenshtein-ratio og (daily) token-Jaccard.
- */
 function normalizedQuestionsTooSimilar(normA, normB, mode) {
   if (!normA || !normB) {
     return false;
@@ -146,42 +175,129 @@ function normalizedQuestionsTooSimilar(normA, normB, mode) {
     return false;
   }
 
-  /* custom: mer tolerant — kun nesten identisk streng */
   if (levRatio >= 0.96) {
     return true;
   }
   return false;
 }
 
-function isDuplicateAgainstList(normalized, list, mode) {
-  for (let i = 0; i < list.length; i += 1) {
-    if (normalizedQuestionsTooSimilar(normalized, list[i], mode)) {
-      return true;
-    }
+/**
+ * Fasittekster er korte — konservativ likhet, ofte kun eksakt match på veldig korte strenger.
+ */
+function normalizedAnswersTooSimilar(normA, normB, mode) {
+  if (!normA || !normB) {
+    return false;
   }
-  return false;
+  if (normA === normB) {
+    return true;
+  }
+  const maxLen = Math.max(normA.length, normB.length);
+  if (maxLen <= 5) {
+    return false;
+  }
+
+  const cap = 120;
+  let a = normA.length > cap ? normA.slice(0, cap) : normA;
+  let b = normB.length > cap ? normB.slice(0, cap) : normB;
+  const ml = Math.max(a.length, b.length);
+  const dist = levenshteinDistance(a, b);
+  const levRatio = 1 - dist / ml;
+
+  if (mode === QUIZ_MEMORY_MODE.DAILY) {
+    return levRatio >= 0.88;
+  }
+  return levRatio >= 0.94;
 }
 
 /**
- * Henter siste N rader fra minnetabellen for sammenligning.
+ * @typedef {{ question: string, answer: string, factKey: string }} MemoryRowNorm
  */
-async function fetchQuestionMemoryHistory(pool) {
+
+/**
+ * Første treff vinner (rekkefølge: fact_key → par → spørsmål alene).
+ * @param {string} normQ
+ * @param {string} normA
+ * @param {string} fkNorm
+ * @param {MemoryRowNorm[]} rows
+ * @param {'daily'|'custom'} mode
+ * @returns {{ reason: string, detail: string } | null}
+ */
+function findMemoryConflict(normQ, normA, fkNorm, rows, mode) {
+  if (fkNorm) {
+    for (let i = 0; i < rows.length; i += 1) {
+      const r = rows[i];
+      if (r.factKey && r.factKey === fkNorm) {
+        return { reason: MEMORY_REJECT_REASON.FACT_KEY, detail: "fact_key_match" };
+      }
+    }
+  }
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const r = rows[i];
+    if (normQ === r.question && normA === r.answer) {
+      return {
+        reason: MEMORY_REJECT_REASON.QUESTION_ANSWER,
+        detail: "exact_question_answer_pair",
+      };
+    }
+  }
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const r = rows[i];
+    if (
+      normalizedQuestionsTooSimilar(normQ, r.question, mode) &&
+      normalizedAnswersTooSimilar(normA, r.answer, mode)
+    ) {
+      return {
+        reason: MEMORY_REJECT_REASON.QUESTION_ANSWER,
+        detail: "fuzzy_question_answer_pair",
+      };
+    }
+  }
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const r = rows[i];
+    if (normQ === r.question) {
+      return {
+        reason: MEMORY_REJECT_REASON.QUESTION_TEXT,
+        detail: "exact_question_text",
+      };
+    }
+  }
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const r = rows[i];
+    if (normalizedQuestionsTooSimilar(normQ, r.question, mode)) {
+      return {
+        reason: MEMORY_REJECT_REASON.QUESTION_TEXT,
+        detail: "fuzzy_question_text",
+      };
+    }
+  }
+
+  return null;
+}
+
+async function fetchQuizMemoryHistoryRows(pool) {
   const r = await pool.query(
-    `SELECT question_normalized
+    `SELECT question_normalized,
+            COALESCE(answer_normalized, '') AS answer_normalized,
+            COALESCE(fact_key_normalized, '') AS fact_key_normalized
      FROM quiz_question_memory
      ORDER BY created_at DESC
      LIMIT $1`,
     [MEMORY_HISTORY_LIMIT]
   );
-  return r.rows.map((row) => String(row.question_normalized ?? ""));
+  return r.rows.map((row) => ({
+    question: String(row.question_normalized ?? ""),
+    answer: String(row.answer_normalized ?? ""),
+    factKey: String(row.fact_key_normalized ?? "").trim(),
+  }));
 }
 
 /**
- * Filtrerer bort spørsmål som matcher historikk eller hverandre (internt i batchen).
- * Returnerer beholdte spørsmål i opprinnelig rekkefølge.
- *
  * @param {import('pg').Pool} pool
- * @param {object[]} questions modellens spørsmålobjekter (med .question)
+ * @param {object[]} questions modellens spørsmålobjekter (med .question, .answer, valgfri .fact_key)
  * @param {string} theme
  * @param {'daily'|'custom'} mode
  */
@@ -195,68 +311,100 @@ async function filterQuizQuestionsAgainstMemory(pool, questions, theme, mode) {
     return { questions: questions || [], rejected: 0, rejectedSnippets: [] };
   }
 
-  let history;
+  let historyRows;
   try {
-    history = await fetchQuestionMemoryHistory(pool);
+    historyRows = await fetchQuizMemoryHistoryRows(pool);
   } catch (e) {
     logMemory(
       `historyFetchFailed msg=${JSON.stringify(String(e?.message || e))} — proceeding without history`
     );
-    history = [];
+    historyRows = [];
   }
 
   const accepted = [];
-  const acceptedNorm = [];
+  /** @type {MemoryRowNorm[]} */
+  const acceptedRows = [];
   const rejectedSnippets = [];
   let rejected = 0;
+  const reasonHistogram = {
+    [MEMORY_REJECT_REASON.FACT_KEY]: 0,
+    [MEMORY_REJECT_REASON.QUESTION_ANSWER]: 0,
+    [MEMORY_REJECT_REASON.QUESTION_TEXT]: 0,
+  };
 
   logMemory(
-    `mode=${m} theme=${JSON.stringify(normalizeThemeForMemory(theme))} historyRows=${history.length} checked=${questions.length}`
+    `mode=${m} theme=${JSON.stringify(normalizeThemeForMemory(theme))} historyRows=${historyRows.length} checked=${questions.length}`
   );
 
   for (let i = 0; i < questions.length; i += 1) {
     const q = questions[i];
-    const raw = String(q?.question ?? "").trim();
-    const norm = normalizeQuizQuestionText(raw);
-    if (!norm) {
+    const rawQ = String(q?.question ?? "").trim();
+    const rawA = String(q?.answer ?? "").trim();
+    const normQ = normalizeQuizQuestionText(rawQ);
+    const normA = normalizeQuizAnswerText(rawA);
+    const fkNorm = normalizeFactKey(q?.fact_key);
+
+    if (!normQ) {
       rejected += 1;
-      rejectedSnippets.push("(tomt etter normalisering)");
-      logMemory(`rejectedQuestion=emptyAfterNormalize index=${i}`);
+      rejectedSnippets.push("(tomt spørsmål etter normalisering)");
+      logMemory(`rejectedReason=empty_after_normalize index=${i}`);
       continue;
     }
-
-    if (isDuplicateAgainstList(norm, acceptedNorm, m)) {
+    if (!normA) {
       rejected += 1;
-      rejectedSnippets.push(raw.slice(0, 80));
+      rejectedSnippets.push(rawQ.slice(0, 80));
       logMemory(
-        `rejectedQuestion=internalDuplicate index=${i} snippet=${JSON.stringify(raw.slice(0, 100))}`
+        `rejectedReason=empty_answer_after_normalize index=${i} snippet=${JSON.stringify(rawQ.slice(0, 100))}`
       );
       continue;
     }
 
-    if (isDuplicateAgainstList(norm, history, m)) {
+    const internal = findMemoryConflict(normQ, normA, fkNorm, acceptedRows, m);
+    if (internal) {
       rejected += 1;
-      rejectedSnippets.push(raw.slice(0, 80));
+      reasonHistogram[internal.reason] =
+        (reasonHistogram[internal.reason] || 0) + 1;
+      rejectedSnippets.push(rawQ.slice(0, 80));
       logMemory(
-        `rejectedQuestion=historyDuplicate index=${i} snippet=${JSON.stringify(raw.slice(0, 100))}`
+        `rejectedReason=${internal.reason} scope=internal detail=${internal.detail} index=${i} snippet=${JSON.stringify(rawQ.slice(0, 100))}`
+      );
+      continue;
+    }
+
+    const hist = findMemoryConflict(normQ, normA, fkNorm, historyRows, m);
+    if (hist) {
+      rejected += 1;
+      reasonHistogram[hist.reason] = (reasonHistogram[hist.reason] || 0) + 1;
+      rejectedSnippets.push(rawQ.slice(0, 80));
+      logMemory(
+        `rejectedReason=${hist.reason} scope=history detail=${hist.detail} index=${i} snippet=${JSON.stringify(rawQ.slice(0, 100))}`
       );
       continue;
     }
 
     accepted.push(q);
-    acceptedNorm.push(norm);
+    acceptedRows.push({
+      question: normQ,
+      answer: normA,
+      factKey: fkNorm,
+    });
   }
 
+  const hParts = [
+    `${MEMORY_REJECT_REASON.QUESTION_TEXT}:${reasonHistogram[MEMORY_REJECT_REASON.QUESTION_TEXT]}`,
+    `${MEMORY_REJECT_REASON.QUESTION_ANSWER}:${reasonHistogram[MEMORY_REJECT_REASON.QUESTION_ANSWER]}`,
+    `${MEMORY_REJECT_REASON.FACT_KEY}:${reasonHistogram[MEMORY_REJECT_REASON.FACT_KEY]}`,
+  ];
+  logMemory(`duplicatesFound=${rejected} rejectedReason=${hParts.join("|")}`);
   logMemory(
-    `duplicatesFound=${rejected} finalAccepted=${accepted.length} (internal+history)`
+    `finalAccepted=${accepted.length} (internal+history) checked=${questions.length}`
   );
 
   return { questions: accepted, rejected, rejectedSnippets };
 }
 
 /**
- * Lagrer aksepterte spørsmål i minnetabellen (kalles etter vellykket quiz-lagring).
- * Bruk samme db-klient som transaksjonen hvis mulig.
+ * Lagrer aksepterte spørsmål etter vellykket quiz-lagring.
  *
  * @param {import('pg').Pool|import('pg').PoolClient} client
  * @param {string} theme
@@ -272,9 +420,12 @@ async function insertQuizQuestionMemoryRows(client, theme, questions, quizSource
 
   for (let i = 0; i < questions.length; i += 1) {
     const q = questions[i];
-    const orig = String(q?.question ?? "").trim();
-    const norm = normalizeQuizQuestionText(orig);
-    if (!norm) {
+    const origQ = String(q?.question ?? "").trim();
+    const normQ = normalizeQuizQuestionText(origQ);
+    const origA = String(q?.answer ?? "").trim();
+    const normA = normalizeQuizAnswerText(origA);
+    const fkNorm = normalizeFactKey(q?.fact_key);
+    if (!normQ || !normA) {
       continue;
     }
     await client.query(
@@ -282,9 +433,12 @@ async function insertQuizQuestionMemoryRows(client, theme, questions, quizSource
         theme_normalized,
         question_original,
         question_normalized,
+        answer_original,
+        answer_normalized,
+        fact_key_normalized,
         quiz_source
-      ) VALUES ($1, $2, $3, $4)`,
-      [themeNorm, orig, norm, src]
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [themeNorm, origQ, normQ, origA, normA, fkNorm || "", src]
     );
   }
 }
@@ -292,9 +446,13 @@ async function insertQuizQuestionMemoryRows(client, theme, questions, quizSource
 module.exports = {
   QUIZ_MEMORY_MODE,
   MEMORY_HISTORY_LIMIT,
+  MEMORY_REJECT_REASON,
   normalizeQuizQuestionText,
+  normalizeQuizAnswerText,
+  normalizeFactKey,
   normalizeThemeForMemory,
   filterQuizQuestionsAgainstMemory,
   insertQuizQuestionMemoryRows,
   normalizedQuestionsTooSimilar,
+  normalizedAnswersTooSimilar,
 };

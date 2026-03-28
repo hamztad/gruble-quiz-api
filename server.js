@@ -16,6 +16,7 @@ const {
   QUIZ_MEMORY_MODE,
   filterQuizQuestionsAgainstMemory,
   insertQuizQuestionMemoryRows,
+  normalizeFactKey,
 } = require("./quizMemory");
 
 const app = express();
@@ -38,6 +39,36 @@ const THEME_INPUT_MAX_WORDS = 3;
  * Nytt: avvis for langt tema før OpenAI-kall (testgenerering).
  * @returns {string|null} feilmelding på norsk, eller null hvis OK
  */
+/** Fjerner backend-felt som ikke skal til klient. */
+function stripQuestionForPublicClient(q) {
+  if (!q || typeof q !== "object") {
+    return q;
+  }
+  const { answer, fact_key, ...rest } = q;
+  return rest;
+}
+
+/** Fjerner fact_key fra generert quiz-payload (svar beholdes for interne kall). */
+function stripFactKeyFromQuizPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+  const qs = payload.questions;
+  if (!Array.isArray(qs)) {
+    return payload;
+  }
+  return {
+    ...payload,
+    questions: qs.map((q) => {
+      if (!q || typeof q !== "object") {
+        return q;
+      }
+      const { fact_key, ...rest } = q;
+      return rest;
+    }),
+  };
+}
+
 function validateThemeForQuizInput(theme) {
   const raw = String(theme ?? "").trim();
   if (raw.length > THEME_INPUT_MAX_CHARS) {
@@ -102,6 +133,18 @@ async function setupTestTable() {
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_quiz_question_memory_created
       ON quiz_question_memory (created_at DESC)
+    `);
+    await pool.query(`
+      ALTER TABLE quiz_question_memory
+      ADD COLUMN IF NOT EXISTS answer_original TEXT NOT NULL DEFAULT ''
+    `);
+    await pool.query(`
+      ALTER TABLE quiz_question_memory
+      ADD COLUMN IF NOT EXISTS answer_normalized TEXT NOT NULL DEFAULT ''
+    `);
+    await pool.query(`
+      ALTER TABLE quiz_question_memory
+      ADD COLUMN IF NOT EXISTS fact_key_normalized TEXT NOT NULL DEFAULT ''
     `);
     await pool.query("INSERT INTO test (message) VALUES ($1)", [
       "Hello from Gruble",
@@ -892,7 +935,9 @@ async function maybeBuildThemeLookupSupport(theme) {
  */
 function buildQuizUserPrompt(theme, questionCount, lookup, subjectMode = false) {
   const themeJson = JSON.stringify(theme);
-  let prompt = `Generer ${questionCount} enkle flervalgsoppgaver på norsk om temaet: ${themeJson}.`;
+  let prompt = `Generer opptil ${questionCount} enkle flervalgsoppgaver på norsk om temaet: ${themeJson}.
+Listen "questions" i JSON skal ha mellom 1 og ${questionCount} elementer. Ta med bare spørsmål du er trygg på — det er bedre med færre spørsmål enn å fylle med gjettverk, oppdiktede synonymer eller «vanlige navn» du ikke kan dokumentere.
+Prioritet ved knapphet: (1) direkte innenfor temaet, (2) deretter forsiktig utvidelse til nærliggende undertema i samme fagområde — ikke hopp til helt andre emner.`;
 
   if (subjectMode) {
     prompt += `
@@ -957,7 +1002,8 @@ HARD REGEL FOR PERSONTEMA:
 
 Temaet virker kort eller tvetydig, og oppslag ga ikke trygg nok faktastøtte.
 Ikke lag spørsmål om konkrete personer, hendelser, verk, TV-serier eller kampanjer.
-Bruk bare generelle og dokumenterbare fakta som kan forsvares direkte ut fra temaet.`;
+Bruk bare generelle og dokumenterbare fakta som kan forsvares direkte ut fra temaet.
+Ikke finn opp alternative navn, folkelige betegnelser, synonymer eller «vanlige navn» som du ikke kan dokumentere.`;
   }
 
   /* Nytt: fagmodus — kun når brukeren eksplisitt ber om det (subjectMode i API). */
@@ -990,7 +1036,7 @@ Hvis du er i tvil om spørsmålet kan ha flere riktige fritekstsvar, skal du for
 
   prompt += `
 
-Returner KUN JSON med denne formen (ingen markdown):
+Returner KUN JSON med denne formen (ingen markdown). "questions" kan ha 1–${questionCount} elementer:
 {"theme":...,"questions":[...]}`;
 
   return prompt;
@@ -1052,8 +1098,10 @@ async function generateQuizWithOpenAI(
   );
 
   let lastValidationError = null;
+  /** Ved for få unike spørsmål etter minne: beste delvise mengde (aldri gjenbruke duplikater). */
+  let bestPartialPayload = null;
 
-  /* Flere forsøk når minnefilter forkaster enkelte spørsmål — mål er alltid nøyaktig questionCount. */
+  /* Flere forsøk når minnefilter forkaster enkelte spørsmål — mål er questionCount; ellers delvis quiz. */
   const maxGenerateAttempts = 5;
   for (let attempt = 0; attempt < maxGenerateAttempts; attempt += 1) {
     const parsed = await parseJsonChatCompletion(
@@ -1073,14 +1121,20 @@ async function generateQuizWithOpenAI(
     const validationError = validateGeneratedQuiz(
       parsed,
       theme,
+      1,
       questionCount,
-      questionCount,
-      lookup
+      lookup,
+      subjectMode
     );
     if (validationError) {
       lastValidationError = validationError;
       continue;
     }
+
+    parsed.questions = parsed.questions.map((q, idx) => ({
+      ...q,
+      id: idx + 1,
+    }));
 
     const shuffled = parsed.questions.map(shuffleQuestionOptions);
     let workingQuestions = shuffled;
@@ -1108,9 +1162,31 @@ async function generateQuizWithOpenAI(
       }
       if (workingQuestions.length < questionCount) {
         console.log(
-          `[quiz memory] insufficientAfterFilter have=${workingQuestions.length} need=${questionCount} — retry generation`
+          `[quiz memory] insufficientAfterFilter have=${workingQuestions.length} need=${questionCount} — partial candidate / retry`
         );
-        lastValidationError = `quiz memory: expected exactly ${questionCount} questions after duplicate filter, got ${workingQuestions.length}`;
+        lastValidationError = `quiz memory: got ${workingQuestions.length} questions after duplicate filter, target ${questionCount}`;
+        const renumberedPartial = workingQuestions.map((q, idx) => ({
+          ...q,
+          id: idx + 1,
+        }));
+        const partialValErr = validateGeneratedQuiz(
+          { ...parsed, questions: renumberedPartial },
+          theme,
+          renumberedPartial.length,
+          renumberedPartial.length,
+          lookup,
+          subjectMode
+        );
+        if (
+          !partialValErr &&
+          renumberedPartial.length >
+            (bestPartialPayload?.questions?.length ?? 0)
+        ) {
+          bestPartialPayload = {
+            parsed,
+            questions: renumberedPartial,
+          };
+        }
         continue;
       }
       workingQuestions = workingQuestions.map((q, idx) => ({
@@ -1122,7 +1198,8 @@ async function generateQuizWithOpenAI(
         theme,
         questionCount,
         questionCount,
-        lookup
+        lookup,
+        subjectMode
       );
       if (afterMemError) {
         lastValidationError = afterMemError;
@@ -1151,6 +1228,42 @@ async function generateQuizWithOpenAI(
 
     return {
       ...parsed,
+      questions: finalQuestions,
+      sharedImage,
+    };
+  }
+
+  if (
+    bestPartialPayload &&
+    bestPartialPayload.questions.length >= 1 &&
+    memoryOptions &&
+    memoryOptions.pool &&
+    typeof memoryOptions.pool.query === "function"
+  ) {
+    console.log(
+      `[quiz memory] partialQuiz returning count=${bestPartialPayload.questions.length} target=${questionCount}`
+    );
+    const { parsed: partialParsed, questions: partialQs } = bestPartialPayload;
+    let finalQuestions = partialQs;
+    let sharedImage = null;
+    try {
+      const decorated = await attachDecorativeQuizImages(
+        theme,
+        lookup,
+        partialQs
+      );
+      finalQuestions = decorated.questions;
+      sharedImage = decorated.sharedImage;
+    } catch (imgErr) {
+      console.warn(
+        "[quiz image] attach failed:",
+        imgErr && typeof imgErr.message === "string"
+          ? imgErr.message
+          : String(imgErr)
+      );
+    }
+    return {
+      ...partialParsed,
       questions: finalQuestions,
       sharedImage,
     };
@@ -1189,10 +1302,7 @@ app.get("/api/quiz/today", async (_req, res) => {
     const quiz = result.rows[0];
     const { sharedImage, questions } = getQuizQuestionsPayloadFromRow(quiz);
 
-    const questionsForClient = questions.map((q) => {
-      const { answer, ...rest } = q;
-      return rest;
-    });
+    const questionsForClient = questions.map((q) => stripQuestionForPublicClient(q));
 
     res.status(200).json({
       theme: quiz.theme,
@@ -1530,6 +1640,50 @@ function getVagueQuestionValidationError(questionText) {
   return null;
 }
 
+/** Spørsmål om alias / folkelige navn uten dokumentasjon er høy hallusinasjonsrisiko (f.eks. oppdiktede «vanlige navn»). */
+const ALTERNATE_NAME_HALLUCINATION_PATTERNS = [
+  /\bet annet navn (?:for|på)\b/i,
+  /\bannet navn (?:for|på)\b/i,
+  /\bogså kalt\b/i,
+  /\bogså kjent som\b/i,
+  /\bvanlig brukt(?:\s+annet)?\s+navn\b/i,
+  /\bkjent som\b/i,
+  /\bpopulært kalt\b/i,
+  /\bkalles ofte\b/i,
+  /\bfolkelig(?:t)?\s+navn\b/i,
+];
+
+const MIN_LOOKUP_CONTEXT_CHARS_FOR_ALIAS_QUESTIONS = 100;
+
+/**
+ * Blokkerer typiske «annet navn / også kalt»-spørsmål når fasit ikke er sporbart i tilstrekkelig lookup-kontekst.
+ * I fagmodus (subjectMode) hoppes sjekken over — der er det bevisst ingen wiki-kontekst.
+ */
+function getAlternateNameHallucinationValidationError(
+  question,
+  lookup,
+  subjectMode
+) {
+  if (subjectMode) {
+    return null;
+  }
+  const text = String(question?.question ?? "").trim();
+  if (
+    !ALTERNATE_NAME_HALLUCINATION_PATTERNS.some((re) => re.test(text))
+  ) {
+    return null;
+  }
+  const ctx = String(lookup?.context ?? "").trim();
+  if (ctx.length < MIN_LOOKUP_CONTEXT_CHARS_FOR_ALIAS_QUESTIONS) {
+    return "unverified alternate-name or synonym phrasing (insufficient lookup context)";
+  }
+  const answer = String(question?.answer ?? "").trim();
+  if (!isAnswerTraceableToLookupContext(answer, ctx)) {
+    return "unverified alternate-name phrasing (answer not traceable to lookup context)";
+  }
+  return null;
+}
+
 /**
  * Nytt: hard kontroll for person-tema med lookup.
  * Hvis fasiten ikke kan spores til lookup-konteksten, forkastes spørsmålet.
@@ -1663,7 +1817,8 @@ function validateGeneratedQuiz(
   expectedTheme,
   minQuestions = 3,
   maxQuestions = 5,
-  lookup = null
+  lookup = null,
+  subjectMode = false
 ) {
   if (!payload || typeof payload !== "object") {
     return "Invalid payload";
@@ -1715,6 +1870,14 @@ function validateGeneratedQuiz(
     if (vagueQuestionError) {
       return `question ${i} ${vagueQuestionError}`;
     }
+    const aliasHallucinationError = getAlternateNameHallucinationValidationError(
+      q,
+      lookup,
+      subjectMode
+    );
+    if (aliasHallucinationError) {
+      return `question ${i} ${aliasHallucinationError}`;
+    }
     const lookupTraceError = getLookupTraceabilityValidationError(
       q,
       expectedTheme,
@@ -1734,6 +1897,17 @@ function validateGeneratedQuiz(
     }
     if (!q.options.includes(q.answer)) {
       return `question ${i} answer must match one of options`;
+    }
+    if (q.fact_key !== undefined && q.fact_key !== null) {
+      if (typeof q.fact_key !== "string") {
+        return `question ${i} fact_key must be a string when present`;
+      }
+      if (String(q.fact_key).trim()) {
+        const fkNorm = normalizeFactKey(q.fact_key);
+        if (!fkNorm) {
+          return `question ${i} fact_key invalid (2–6 segments, e.g. norge|hovedstad|oslo)`;
+        }
+      }
     }
     const optionBalanceError = getAnswerOptionBalanceValidationError(q);
     if (optionBalanceError) {
@@ -1876,7 +2050,7 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
       await pool.end().catch(() => {});
     }
 
-    res.status(200).json(parsed);
+    res.status(200).json(stripFactKeyFromQuizPayload(parsed));
   } catch (err) {
     const message =
       err && typeof err.message === "string" ? err.message : "OpenAI failed";
