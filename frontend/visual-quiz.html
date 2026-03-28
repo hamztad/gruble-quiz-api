@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Bilde-quiz — Gruble</title>
     <link rel="stylesheet" href="visual-quiz.css" />
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body class="vq-body">
     <div class="vq-shell">
@@ -49,6 +50,178 @@
         </p>
       </div>
     </div>
+
+    <div
+      id="protest-modal"
+      class="protest-modal protest-modal--hidden"
+      aria-hidden="true"
+    >
+      <div class="protest-modal__backdrop" id="protest-modal-backdrop"></div>
+      <div
+        class="protest-modal__panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="protest-modal-title"
+      >
+        <div class="protest-modal__head">
+          <h3 id="protest-modal-title">Protest</h3>
+          <button
+            type="button"
+            class="protest-modal__close"
+            id="protest-modal-close"
+            aria-label="Lukk"
+          >
+            ×
+          </button>
+        </div>
+
+        <div id="protest-finalized-view" class="protest-block--hidden">
+          <p class="protest-finalized-note" id="protest-finalized-text">
+            Protest for dette spørsmålet er avsluttet. Du kan ikke sende ny
+            protest her.
+          </p>
+          <button type="button" class="primary" id="protest-finalized-ok">
+            Lukk
+          </button>
+        </div>
+
+        <div id="protest-revision-view" class="protest-block--hidden">
+          <p class="protest-finalized-note" id="protest-revision-message">
+            Protesten er registrert. Spørsmålet tas ut av denne økten og sendes
+            til revisjon.
+          </p>
+          <p
+            class="protest-revision-points"
+            id="protest-revision-points"
+            aria-live="polite"
+          ></p>
+          <button type="button" class="primary" id="protest-revision-next">
+            Neste spørsmål
+          </button>
+        </div>
+
+        <div id="protest-active-view">
+          <div class="protest-chat" aria-label="Protestdialog">
+            <div id="protest-thread" class="protest-chat__thread"></div>
+          </div>
+
+          <div id="protest-form-phase">
+            <label class="protest-modal__label" for="protest-type"
+              >Protesttype</label
+            >
+            <select id="protest-type" class="protest-modal__select">
+              <option value="Faktafeil">Faktafeil</option>
+              <option value="Flere riktige svar">Flere riktige svar</option>
+              <option value="Dårlig formulert spørsmål">
+                Dårlig formulert spørsmål
+              </option>
+              <option value="Dårlige eller uklare alternativer">
+                Dårlige eller uklare alternativer
+              </option>
+              <option value="Passer ikke for skrivesvar">
+                Passer ikke for skrivesvar
+              </option>
+            </select>
+            <label class="protest-modal__label" for="protest-message"
+              >Begrunnelse</label
+            >
+            <textarea
+              id="protest-message"
+              class="protest-modal__textarea"
+              rows="4"
+              placeholder="Forklar hvorfor du protesterer…"
+            ></textarea>
+            <div class="protest-modal__voice-row">
+              <button
+                type="button"
+                class="ghost voice-mic-btn voice-mic-btn--round"
+                id="protest-voice-button"
+                data-voice-target="protest-message"
+                data-voice-status="protest-voice-status"
+                aria-label="Start taleopptak"
+              >
+                <span class="voice-mic-btn__inner"
+                  ><svg
+                    class="voice-mic-btn__svg"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <path
+                      fill="currentColor"
+                      d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6.2 6.72V21h2v-3.28c3.48-.49 6.2-3.31 6.2-6.72h-1.7z"
+                    />
+                  </svg>
+                </span>
+              </button>
+              <span
+                class="voice-status voice-status--protest"
+                id="protest-voice-status"
+                aria-live="polite"
+              ></span>
+            </div>
+            <div class="protest-modal__actions protest-modal__actions--form">
+              <button type="button" class="ghost" id="protest-cancel">
+                Avbryt
+              </button>
+              <button type="button" class="primary" id="protest-submit">
+                Send
+              </button>
+            </div>
+          </div>
+
+          <div id="protest-chat-phase" class="protest-block--hidden">
+            <div class="protest-chat-composer">
+              <input
+                type="text"
+                id="protest-followup-input"
+                class="protest-chat-composer__input"
+                placeholder="Skriv videre…"
+                autocomplete="off"
+              />
+              <button
+                type="button"
+                class="ghost voice-mic-btn voice-mic-btn--round"
+                id="protest-followup-voice-button"
+                data-voice-target="protest-followup-input"
+                data-voice-status="protest-followup-voice-status"
+                aria-label="Start taleopptak"
+              >
+                <span class="voice-mic-btn__inner"
+                  ><svg
+                    class="voice-mic-btn__svg"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <path
+                      fill="currentColor"
+                      d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6.2 6.72V21h2v-3.28c3.48-.49 6.2-3.31 6.2-6.72h-1.7z"
+                    />
+                  </svg>
+                </span>
+              </button>
+              <span
+                class="voice-status voice-status--protest"
+                id="protest-followup-voice-status"
+                aria-live="polite"
+              ></span>
+              <button type="button" class="primary" id="protest-chat-send">
+                Send
+              </button>
+            </div>
+            <p id="protest-thread-limit-msg" class="protest-thread-limit-msg protest-block--hidden">
+              Protesttråden er avsluttet (maks 5 meldinger). Trykk «Avslutt
+              protest» for å lukke.
+            </p>
+            <div class="protest-modal__actions protest-modal__actions--chat">
+              <button type="button" class="ghost protest-end-btn" id="protest-end">
+                Avslutt protest
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="visual-quiz.js" defer></script>
   </body>
 </html>

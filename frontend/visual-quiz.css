@@ -251,6 +251,31 @@ body.vq-body {
   border-bottom: 1px solid var(--vq-border);
 }
 
+.vq-play__header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+/* Hovedquiz (styles.css): modus, alternativer, tilbakemelding inne i bilde-quiz-kortet */
+.vq-play .mode-choice {
+  margin-bottom: 1rem;
+}
+
+.vq-play #result {
+  margin-bottom: 1rem;
+}
+
+.vq-play .write-box {
+  margin-bottom: 1rem;
+}
+
+.vq-play .options {
+  margin-bottom: 0.35rem;
+}
+
 @media (min-width: 640px) {
   .vq-play__header {
     padding: 1.15rem 1.5rem;
