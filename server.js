@@ -1293,7 +1293,7 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
   const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
   try {
-    const questionCount = 3 + Math.floor(Math.random() * 3);
+    const questionCount = 5;
     const parsed = await generateQuizWithOpenAI(openai, model, theme, questionCount);
 
     const databaseUrl = process.env.DATABASE_URL;

@@ -38,6 +38,15 @@ const state = {
 
 const app = document.getElementById("app");
 
+/** Inline spinnere for ventetilstand (generering, innsending, sjekk). */
+function loadingSpinnerMarkup() {
+  return '<span class="loading-spinner" role="status" aria-label="Laster"></span>';
+}
+
+function loadingInlineRow(text) {
+  return `<div class="loading-inline">${loadingSpinnerMarkup()}<span>${text}</span></div>`;
+}
+
 let protestTargetQuestion = null;
 let protestSubmitInFlight = false;
 
@@ -72,6 +81,8 @@ function getQuestionState(questionId) {
       lastFeedback: null,
       submittedAnswer: null,
       checkingQuestion: false,
+      mcSubmitting: false,
+      writtenSubmitting: false,
       infoMessage: "",
       infoClass: "hint",
       underRevision: false,
@@ -187,6 +198,7 @@ function advanceToNextPlayableQuestion() {
 }
 
 async function loadQuiz() {
+  app.innerHTML = loadingInlineRow("Laster quiz…");
   try {
     const response = await fetch(`${API_BASE}/api/quiz/today`);
     if (!response.ok) {
@@ -236,7 +248,8 @@ async function generateNewQuiz() {
   }
 
   btn.disabled = true;
-  statusEl.textContent = "Genererer quiz…";
+  statusEl.innerHTML = `${loadingSpinnerMarkup()}<span> Genererer quiz…</span>`;
+  statusEl.classList.add("generate-status--loading");
 
   try {
     const res = await fetch(`${API_BASE}/api/internal/generate-test-quiz`, {
@@ -253,14 +266,18 @@ async function generateNewQuiz() {
       throw new Error(msg);
     }
 
-    statusEl.textContent = "Laster oppdatert quiz…";
+    statusEl.classList.remove("generate-status--loading");
+    statusEl.innerHTML = `${loadingSpinnerMarkup()}<span> Laster oppdatert quiz…</span>`;
+    statusEl.classList.add("generate-status--loading");
     const loaded = await loadQuiz();
+    statusEl.classList.remove("generate-status--loading");
     statusEl.textContent = loaded
       ? ""
       : "Quiz ble lagret, men kunne ikke hente dagens quiz.";
   } catch (err) {
     const msg =
       err && typeof err.message === "string" ? err.message : "Ukjent feil";
+    statusEl.classList.remove("generate-status--loading");
     statusEl.textContent = "Feilet: " + msg;
   } finally {
     btn.disabled = false;
@@ -286,16 +303,14 @@ function render() {
     answerBlock = "";
     resultClass = "result hint";
     resultText = "";
-  } else if (qs.checkingQuestion) {
-    resultClass = "result hint";
-    resultText = "Sjekker spørsmålet…";
   } else if (qs.answered && qs.lastFeedback && qs.lastFeedback.networkError) {
     resultClass = "result wrong";
-    resultText = "Kunne ikke sende inn svar.";
+    resultText =
+      qs.answerMode === "mc" ? "" : "Kunne ikke sende inn svar.";
   } else if (qs.answered && qs.lastFeedback) {
     resultClass += qs.lastFeedback.correct ? " correct" : " wrong";
     const pts = qs.lastFeedback.points;
-    if (qs.answerMode === "written") {
+    if (qs.answerMode === "written" || qs.answerMode === "mc") {
       resultText = "";
     } else {
       resultText = qs.lastFeedback.correct
@@ -311,10 +326,24 @@ function render() {
       </div>
     `;
   } else if (qs.answerMode === "mc") {
+    if (qs.mcSubmitting) {
+      resultClass = "result hint";
+      resultText = "";
+    }
     const available = question.options.filter(
       (opt) => !qs.removedOptions.includes(opt)
     );
-    if (qs.removedOptions.length > 0 && !qs.answered) {
+    const lastWrongMc =
+      !qs.answered &&
+      qs.lastFeedback &&
+      typeof qs.lastFeedback.selectedAnswer === "string" &&
+      qs.lastFeedback.selectedAnswer &&
+      !qs.lastFeedback.correct &&
+      !qs.lastFeedback.networkError;
+    if (lastWrongMc) {
+      resultClass = "result wrong";
+      resultText = "";
+    } else if (qs.removedOptions.length > 0 && !qs.answered) {
       resultClass = "result hint";
       resultText =
         "Feil alternativ er fjernet. Prøv igjen. (3 / 2 / 1 / 0 poeng ved riktig svar.)";
@@ -322,6 +351,7 @@ function render() {
       resultText =
         "Velg et svaralternativ. Første riktige gir 3 poeng, deretter 2, 1 og 0.";
     }
+    const optLocked = qs.answered || qs.mcSubmitting;
     answerBlock = `
       <div class="options">
         ${question.options
@@ -332,7 +362,7 @@ function render() {
                 type="button"
                 class="option-button ${removed ? "option-removed" : ""}"
                 data-answer="${escapeHtml(option)}"
-                ${removed || qs.answered ? "disabled" : ""}
+                ${removed || optLocked ? "disabled" : ""}
               >
                 ${escapeHtml(option)}
               </button>
@@ -343,21 +373,40 @@ function render() {
       <p class="muted">Synlige valg igjen: ${available.length}</p>
     `;
   } else if (qs.answerMode === "written") {
-    resultText = "Skriv inn svar og trykk Send inn.";
+    if (qs.writtenSubmitting || qs.checkingQuestion) {
+      resultClass = "result hint";
+      resultText = "";
+    } else {
+      resultText = "Skriv inn svar og trykk Send inn.";
+    }
+    const formBusy = qs.writtenSubmitting || qs.checkingQuestion;
+    const writtenTaText =
+      qs.writtenSubmitting && typeof qs.pendingWrittenDisplay === "string"
+        ? qs.pendingWrittenDisplay
+        : typeof qs.writtenComposeSnapshot === "string"
+          ? qs.writtenComposeSnapshot
+          : "";
     answerBlock = `
       <div class="write-box">
-        <textarea id="written-answer" placeholder="Skriv svaret ditt her"></textarea>
+        <textarea id="written-answer" placeholder="Skriv svaret ditt her"${
+          formBusy ? " readonly" : ""
+        }>${escapeHtml(writtenTaText)}</textarea>
         <div class="write-actions">
-          <button type="button" class="primary" id="written-submit">Send inn</button>
+          <button type="button" class="primary" id="written-submit"${
+            formBusy ? ' data-form-lock="1"' : ""
+          }>Send inn</button>
           <button
             type="button"
             class="ghost voice-mic-btn voice-mic-btn--round"
             data-voice-target="written-answer"
             data-voice-status="written-voice-status"
             aria-label="Start taleopptak"
+            ${formBusy ? "disabled" : ""}
           ><span class="voice-mic-btn__inner">${VOICE_SVG_MIC}</span></button>
           <span class="voice-status" id="written-voice-status" aria-live="polite"></span>
-          <button type="button" class="ghost" id="check-written-suitability">
+          <button type="button" class="ghost" id="check-written-suitability"${
+            formBusy ? " disabled" : ""
+          }>
             Passer ikke for skrivesvar
           </button>
         </div>
@@ -371,9 +420,79 @@ function render() {
   }
 
   let resultContent;
-  if (revisionMode) {
+  if (qs.writtenSubmitting) {
+    resultContent = loadingInlineRow("Sender inn svar…");
+  } else if (qs.mcSubmitting) {
+    resultContent = loadingInlineRow("Registrerer svar…");
+  } else if (qs.checkingQuestion) {
+    resultContent = loadingInlineRow("Sjekker spørsmålet…");
+  } else if (revisionMode) {
     resultContent =
       '<p class="revision-placeholder">Dette spørsmålet revideres.</p>';
+  } else if (
+    qs.answered &&
+    qs.lastFeedback &&
+    qs.answerMode === "mc" &&
+    qs.lastFeedback.networkError
+  ) {
+    const sel =
+      qs.lastFeedback.selectedAnswer != null
+        ? String(qs.lastFeedback.selectedAnswer)
+        : "";
+    resultContent = `
+      <div class="feedback-mc feedback-choice-block">
+        <p class="feedback-user-heading"><strong>Ditt valg:</strong></p>
+        <p class="feedback-user-quote"><em>&quot;${escapeHtml(sel)}&quot;</em></p>
+        <div class="feedback-divider" aria-hidden="true"></div>
+        <p class="feedback-verdict">Kunne ikke sende inn svar.</p>
+      </div>
+    `;
+  } else if (
+    qs.answered &&
+    qs.lastFeedback &&
+    qs.answerMode === "mc" &&
+    !qs.lastFeedback.networkError
+  ) {
+    const sel =
+      qs.lastFeedback.selectedAnswer != null
+        ? String(qs.lastFeedback.selectedAnswer)
+        : "";
+    const ptsRaw = qs.lastFeedback.points;
+    const ptsNum = Number(ptsRaw);
+    const ptsDisplay = Number.isFinite(ptsNum) ? ptsNum : 0;
+    const verdict = qs.lastFeedback.correct
+      ? `<p class="feedback-verdict-points"><strong>Riktig svar.</strong> Poeng for spørsmålet: ${escapeHtml(
+          String(ptsDisplay)
+        )}</p>`
+      : `<p class="feedback-verdict-points"><strong>Feil svar.</strong> Poeng for spørsmålet: ${escapeHtml(
+          String(ptsDisplay)
+        )}</p>`;
+    resultContent = `
+      <div class="feedback-mc feedback-choice-block">
+        <p class="feedback-user-heading"><strong>Ditt valg:</strong></p>
+        <p class="feedback-user-quote"><em>&quot;${escapeHtml(sel)}&quot;</em></p>
+        <div class="feedback-divider" aria-hidden="true"></div>
+        ${verdict}
+      </div>
+    `;
+  } else if (
+    !qs.answered &&
+    qs.answerMode === "mc" &&
+    qs.lastFeedback &&
+    typeof qs.lastFeedback.selectedAnswer === "string" &&
+    qs.lastFeedback.selectedAnswer &&
+    !qs.lastFeedback.correct &&
+    !qs.lastFeedback.networkError
+  ) {
+    const sel = String(qs.lastFeedback.selectedAnswer);
+    resultContent = `
+      <div class="feedback-mc feedback-choice-block">
+        <p class="feedback-user-heading"><strong>Ditt valg:</strong></p>
+        <p class="feedback-user-quote"><em>&quot;${escapeHtml(sel)}&quot;</em></p>
+        <div class="feedback-divider" aria-hidden="true"></div>
+        <p class="feedback-verdict-points">Feil svar. Alternativet er fjernet. Prøv igjen. (3 / 2 / 1 / 0 poeng ved riktig svar.)</p>
+      </div>
+    `;
   } else if (
     qs.answered &&
     qs.lastFeedback &&
@@ -593,8 +712,13 @@ function getQuestionOverride(question) {
 }
 
 async function submitMultipleChoice(question, answer, qs) {
+  if (qs.mcSubmitting) {
+    return;
+  }
   const questionId = question.id;
   const attemptNumber = qs.removedOptions.length + 1;
+  qs.mcSubmitting = true;
+  render();
   try {
     const response = await fetch(`${API_BASE}/api/quiz/answer`, {
       method: "POST",
@@ -614,33 +738,42 @@ async function submitMultipleChoice(question, answer, qs) {
 
     if (!response.ok) {
       qs.answered = true;
-      qs.lastFeedback = { networkError: true };
-      render();
+      qs.lastFeedback = { networkError: true, selectedAnswer: answer };
       return;
     }
 
     if (result.correct) {
       qs.answered = true;
+      qs.submittedAnswer = answer;
       qs.lastFeedback = {
         correct: true,
         points: result.points,
+        selectedAnswer: answer,
       };
       state.totalScore += Number(result.points) || 0;
     } else {
       if (!qs.removedOptions.includes(answer)) {
         qs.removedOptions.push(answer);
       }
-      qs.lastFeedback = { correct: false, points: 0 };
+      qs.lastFeedback = {
+        correct: false,
+        points: 0,
+        selectedAnswer: answer,
+      };
     }
-    render();
   } catch (error) {
     qs.answered = true;
-    qs.lastFeedback = { networkError: true };
+    qs.lastFeedback = { networkError: true, selectedAnswer: answer };
+  } finally {
+    qs.mcSubmitting = false;
     render();
   }
 }
 
 async function checkQuestionSuitability(question, qs) {
+  const ta = document.getElementById("written-answer");
+  qs.writtenComposeSnapshot =
+    ta && typeof ta.value === "string" ? ta.value : "";
   qs.checkingQuestion = true;
   qs.infoMessage = "";
   render();
@@ -660,6 +793,7 @@ async function checkQuestionSuitability(question, qs) {
 
     const result = await response.json();
     qs.checkingQuestion = false;
+    qs.writtenComposeSnapshot = undefined;
 
     if (!response.ok) {
       qs.infoClass = "wrong";
@@ -711,6 +845,7 @@ async function checkQuestionSuitability(question, qs) {
     render();
   } catch (error) {
     qs.checkingQuestion = false;
+    qs.writtenComposeSnapshot = undefined;
     qs.infoClass = "wrong";
     qs.infoMessage = "Kunne ikke sjekke spørsmålet.";
     render();
@@ -721,8 +856,18 @@ async function submitWritten(question, answer, qs) {
   if (voiceTranscribingTargetId === "written-answer") {
     return;
   }
+  if (isVoiceRecordingForFieldId("written-answer")) {
+    return;
+  }
+  if (qs.writtenSubmitting) {
+    return;
+  }
   const questionId = question.id;
-  qs.submittedAnswer = String(answer ?? "").trim();
+  const trimmed = String(answer ?? "").trim();
+  qs.submittedAnswer = trimmed;
+  qs.pendingWrittenDisplay = trimmed;
+  qs.writtenSubmitting = true;
+  render();
   try {
     const response = await fetch(`${API_BASE}/api/quiz/answer`, {
       method: "POST",
@@ -742,7 +887,6 @@ async function submitWritten(question, answer, qs) {
     if (!response.ok) {
       qs.answered = true;
       qs.lastFeedback = { networkError: true };
-      render();
       return;
     }
 
@@ -753,10 +897,12 @@ async function submitWritten(question, answer, qs) {
       feedback: typeof result.feedback === "string" ? result.feedback : "",
     };
     state.totalScore += Number(result.points) || 0;
-    render();
   } catch (error) {
     qs.answered = true;
     qs.lastFeedback = { networkError: true };
+  } finally {
+    qs.writtenSubmitting = false;
+    qs.pendingWrittenDisplay = undefined;
     render();
   }
 }
@@ -781,6 +927,17 @@ let voiceActiveCtx = null;
 /** id på feltet som får transkribert tekst (f.eks. written-answer); null når ikke aktiv */
 let voiceTranscribingTargetId = null;
 
+function isVoiceRecordingForFieldId(fieldId) {
+  return Boolean(
+    fieldId &&
+      voiceActiveCtx &&
+      voiceActiveCtx.field &&
+      voiceActiveCtx.field.id === fieldId &&
+      voiceRecorder &&
+      voiceRecorder.state === "recording"
+  );
+}
+
 function clearVoiceCountdown() {
   if (voiceCountdownInterval) {
     clearInterval(voiceCountdownInterval);
@@ -793,7 +950,11 @@ function applyWrittenAnswerSubmitVoiceLock() {
   if (!btn) {
     return;
   }
-  btn.disabled = voiceTranscribingTargetId === "written-answer";
+  const formLocked = btn.dataset.formLock === "1";
+  const voiceLocked =
+    voiceTranscribingTargetId === "written-answer" ||
+    isVoiceRecordingForFieldId("written-answer");
+  btn.disabled = formLocked || voiceLocked;
 }
 
 function setVoiceButtonAppearance(button, recording) {
@@ -932,12 +1093,14 @@ async function toggleVoiceRecording(button) {
 
     if (blob.size < VOICE_MIN_BYTES) {
       setVoiceStatus(ctx.statusEl, "Ingen lyd fanget. Prøv igjen.", true);
+      applyWrittenAnswerSubmitVoiceLock();
+      applyProtestComposerLock();
       return;
     }
 
+    voiceTranscribingTargetId = ctx.field.id || null;
     setVoiceStatus(ctx.statusEl, "Behandler…");
     ctx.button.disabled = true;
-    voiceTranscribingTargetId = ctx.field.id || null;
     applyWrittenAnswerSubmitVoiceLock();
     applyProtestComposerLock();
 
@@ -977,6 +1140,8 @@ async function toggleVoiceRecording(button) {
 
   mr.start(200);
   setVoiceButtonAppearance(ctx.button, true);
+  applyWrittenAnswerSubmitVoiceLock();
+  applyProtestComposerLock();
   if (ctx.statusEl) {
     ctx.statusEl.classList.remove("voice-status--error");
     ctx.statusEl.classList.add("voice-status--recording");
@@ -1136,7 +1301,8 @@ function applyProtestComposerLock() {
   }
   if (formSubmit) {
     const voiceBlocksFormSend =
-      voiceTranscribingTargetId === "protest-message";
+      voiceTranscribingTargetId === "protest-message" ||
+      isVoiceRecordingForFieldId("protest-message");
     formSubmit.disabled =
       formBlocked || inChatPhase || (inFormPhase && voiceBlocksFormSend);
     if (inFormPhase) {
@@ -1152,7 +1318,8 @@ function applyProtestComposerLock() {
   }
   if (chatSend) {
     const voiceBlocksChatSend =
-      voiceTranscribingTargetId === "protest-followup-input";
+      voiceTranscribingTargetId === "protest-followup-input" ||
+      isVoiceRecordingForFieldId("protest-followup-input");
     chatSend.disabled =
       chatBlocked ||
       !inChatPhase ||
@@ -1605,13 +1772,15 @@ async function submitProtest() {
 
   if (
     protestSession?.phase === "form" &&
-    voiceTranscribingTargetId === "protest-message"
+    (voiceTranscribingTargetId === "protest-message" ||
+      isVoiceRecordingForFieldId("protest-message"))
   ) {
     return;
   }
   if (
     protestSession?.phase === "chat" &&
-    voiceTranscribingTargetId === "protest-followup-input"
+    (voiceTranscribingTargetId === "protest-followup-input" ||
+      isVoiceRecordingForFieldId("protest-followup-input"))
   ) {
     return;
   }
