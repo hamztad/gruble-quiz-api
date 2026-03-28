@@ -49,7 +49,7 @@ const IMAGE_QUERY_STOPWORDS = new Set([
   "år",
 ]);
 
-async function fetchJsonWithTimeout(url, timeoutMs = 8000) {
+async function fetchJsonWithTimeout(url, timeoutMs = 5500) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -342,9 +342,8 @@ async function searchPixabayImageCandidates(query, limit = 6) {
     out.push({
       url: urlHit,
       title: String(h?.tags || q)
-        .split(",")[0]
         .trim()
-        .slice(0, 120),
+        .slice(0, 200),
       source: "pixabay",
       credit: `Foto: ${user} / Pixabay`,
       width: h?.imageWidth,
@@ -598,7 +597,7 @@ function pickBestImageCandidateWithScore(candidates, context = {}) {
   const theme = String(context.theme ?? "").trim();
   const questionText = String(context.questionText ?? "").trim();
   const minScore =
-    typeof context.minScore === "number" ? context.minScore : 2;
+    typeof context.minScore === "number" ? context.minScore : 1;
 
   /** @type {{ c: QuizImageCandidate, base: number, bonus: number, total: number, reasons: string[] }[]} */
   const ranked = [];
@@ -695,6 +694,31 @@ function pickBestImageCandidate(candidates, context = {}) {
 }
 
 /**
+ * Prøv strengere minScore først, deretter 1 og 0 (slik at vi oftere får bilde uten å droppe helt trygge kandidater).
+ * @param {QuizImageCandidate[]} candidates
+ * @param {{ theme?: string, questionText?: string, minScore?: number }} context
+ */
+function pickBestImageCandidateWithTiers(candidates, context = {}) {
+  const preferred =
+    typeof context.minScore === "number" ? context.minScore : 1;
+  const tail = preferred > 1 ? [1, 0] : [0];
+  const tiers = [preferred, ...tail].filter(
+    (v, i, arr) =>
+      typeof v === "number" && v >= 0 && arr.indexOf(v) === i
+  );
+  for (let t = 0; t < tiers.length; t += 1) {
+    const res = pickBestImageCandidateWithScore(candidates, {
+      ...context,
+      minScore: tiers[t],
+    });
+    if (res.candidate) {
+      return res;
+    }
+  }
+  return { candidate: null, meta: null };
+}
+
+/**
  * Primærsøkeord: tema, ellers første trygge oppslagstittel.
  * @param {string} theme
  * @param {{ nameTitles?: string[], context?: string }} lookup
@@ -762,7 +786,7 @@ function isQuizCohesiveForSharedImage(theme, questions) {
       hits += 1;
     }
   }
-  return hits >= Math.ceil(questions.length * 0.65);
+  return hits >= Math.ceil(questions.length * 0.5);
 }
 
 /**
@@ -794,10 +818,12 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
   if (cohesive && primaryQuery) {
     const { wiki, pix, merged } =
       await fetchImageCandidatesFromBothSources(primaryQuery);
-    const { candidate: best, meta: pickMeta } = pickBestImageCandidateWithScore(
-      merged,
-      { theme, questionText: sharedQuestionContext, minScore: 1 }
-    );
+    const { candidate: best, meta: pickMeta } =
+      pickBestImageCandidateWithTiers(merged, {
+        theme,
+        questionText: sharedQuestionContext,
+        minScore: 1,
+      });
     const candidatesCount = merged.length;
     log(
       `candidates wiki=${wiki.length} pixabay=${pix.length} merged=${candidatesCount}`
@@ -844,64 +870,71 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
   }
 
   log(`mode=per-question cohesive=${cohesive ? "true" : "false"}`);
-  /** @type {object[]} */
-  const out = [];
-  for (let i = 0; i < questions.length; i += 1) {
-    const qq = questions[i];
-    const qry = buildQuestionImageSearchQuery(
-      theme,
-      lookup,
-      qq?.question ?? ""
-    );
-    log(`query=${JSON.stringify(qry || "")} questionIndex=${i}`);
-    if (!qry) {
-      const { image, ...rest } = qq;
-      out.push(rest);
-      continue;
-    }
-    const { wiki, pix, merged } = await fetchImageCandidatesFromBothSources(qry);
-    const { candidate: best, meta: pickMeta } = pickBestImageCandidateWithScore(
-      merged,
-      { theme, questionText: String(qq?.question ?? "") }
-    );
-    const candidatesCount = merged.length;
-    log(
-      `candidates wiki=${wiki.length} pixabay=${pix.length} merged=${candidatesCount} questionIndex=${i}`
-    );
-    log(`chosenSource=${best ? best.source : "none"} questionIndex=${i}`);
-    if (best && pickMeta) {
-      log(
-        `picked scores base=${pickMeta.baseScore} sourceBonus=${pickMeta.sourceBonus} total=${pickMeta.totalScore} reasons=${JSON.stringify(pickMeta.bonusReasons.join("; ") || "ingen kildebonus")} questionIndex=${i}`
+  const perQuestionResults = await Promise.all(
+    questions.map(async (qq, i) => {
+      const qry = buildQuestionImageSearchQuery(
+        theme,
+        lookup,
+        qq?.question ?? ""
       );
-      log(`winner=${JSON.stringify(pickMeta.winnerReason)} questionIndex=${i}`);
-      if (pickMeta.runnerUp) {
-        log(
-          `runnerUp source=${pickMeta.runnerUp.source} total=${pickMeta.runnerUp.totalScore} base=${pickMeta.runnerUp.baseScore} bonus=${pickMeta.runnerUp.sourceBonus} title=${JSON.stringify(pickMeta.runnerUp.titleSnippet)} questionIndex=${i}`
-        );
+      log(`query=${JSON.stringify(qry || "")} questionIndex=${i}`);
+      if (!qry) {
+        const { image, ...rest } = qq;
+        return { index: i, row: rest, candidatesCount: 0, pickMeta: null };
       }
-    }
-    if (best) {
-      log(`pickedTitle=${JSON.stringify(best.title)}`);
-      out.push({
-        ...qq,
-        image: {
-          url: best.url,
-          title: best.title,
-          source: best.source,
-          credit: best.credit,
-          width: best.width,
-          height: best.height,
-          pageUrl: best.pageUrl,
-        },
-      });
-    } else {
+      const { wiki, pix, merged } =
+        await fetchImageCandidatesFromBothSources(qry);
+      const { candidate: best, meta: pickMeta } =
+        pickBestImageCandidateWithTiers(merged, {
+          theme,
+          questionText: String(qq?.question ?? ""),
+        });
+      const candidatesCount = merged.length;
+      log(
+        `candidates wiki=${wiki.length} pixabay=${pix.length} merged=${candidatesCount} questionIndex=${i}`
+      );
+      log(`chosenSource=${best ? best.source : "none"} questionIndex=${i}`);
+      if (best && pickMeta) {
+        log(
+          `picked scores base=${pickMeta.baseScore} sourceBonus=${pickMeta.sourceBonus} total=${pickMeta.totalScore} reasons=${JSON.stringify(pickMeta.bonusReasons.join("; ") || "ingen kildebonus")} questionIndex=${i}`
+        );
+        log(`winner=${JSON.stringify(pickMeta.winnerReason)} questionIndex=${i}`);
+        if (pickMeta.runnerUp) {
+          log(
+            `runnerUp source=${pickMeta.runnerUp.source} total=${pickMeta.runnerUp.totalScore} base=${pickMeta.runnerUp.baseScore} bonus=${pickMeta.runnerUp.sourceBonus} title=${JSON.stringify(pickMeta.runnerUp.titleSnippet)} questionIndex=${i}`
+          );
+        }
+      }
+      if (best) {
+        log(`pickedTitle=${JSON.stringify(best.title)}`);
+        return {
+          index: i,
+          row: {
+            ...qq,
+            image: {
+              url: best.url,
+              title: best.title,
+              source: best.source,
+              credit: best.credit,
+              width: best.width,
+              height: best.height,
+              pageUrl: best.pageUrl,
+            },
+          },
+          candidatesCount,
+          pickMeta,
+        };
+      }
       if (candidatesCount > 0) {
         log(`relevance=no candidate met minScore questionIndex=${i}`);
       }
       const { image, ...rest } = qq;
-      out.push(rest);
-    }
-  }
+      return { index: i, row: rest, candidatesCount, pickMeta: null };
+    })
+  );
+
+  perQuestionResults.sort((a, b) => a.index - b.index);
+  const out = perQuestionResults.map((r) => r.row);
 
   const withImg = out.filter((q) => q && q.image).length;
   log(`questionImage assigned count=${withImg}`);
