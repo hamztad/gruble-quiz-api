@@ -1780,6 +1780,24 @@ function getVagueQuestionValidationError(questionText) {
   return null;
 }
 
+/** Ofte åpne / utydelige «type»-spørsmål uten én klar fasit. */
+const ABSTRACT_TYPE_QUESTION_PATTERNS = [
+  /\bhvilken type\b/i,
+  /\bhva slags type\b/i,
+  /\bhva slags\b/i,
+];
+
+function getAbstractTypeQuestionValidationError(questionText) {
+  const text = String(questionText ?? "").trim();
+  if (!text) {
+    return null;
+  }
+  if (ABSTRACT_TYPE_QUESTION_PATTERNS.some((re) => re.test(text))) {
+    return "must not use abstract type phrasing (hvilken type / hva slags)";
+  }
+  return null;
+}
+
 /**
  * Defensiv sperre mot spørsmål som er for elementære til valgt vanskegrad.
  * Bevisst smal: stopper bare tydelige «første-faktum»-spørsmål på normal/hard.
@@ -2052,6 +2070,10 @@ function validateGeneratedQuiz(
     const vagueQuestionError = getVagueQuestionValidationError(q.question);
     if (vagueQuestionError) {
       return `question ${i} ${vagueQuestionError}`;
+    }
+    const abstractTypeError = getAbstractTypeQuestionValidationError(q.question);
+    if (abstractTypeError) {
+      return `question ${i} ${abstractTypeError}`;
     }
     const tooEasyError = getTooEasyForDifficultyValidationError(
       q.question,
