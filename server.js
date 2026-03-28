@@ -1247,12 +1247,25 @@ function getAnswerOptionBalanceValidationError(question) {
     distractorProfiles.reduce((sum, item) => sum + item.score, 0) /
     distractorProfiles.length;
   const maxDistractorScore = Math.max(...distractorProfiles.map((item) => item.score));
+  const maxDistractorWords = Math.max(...distractorProfiles.map((item) => item.words));
 
   const answerLooksSpecific =
     answerProfile.words >= 5 ||
     answerProfile.longWords >= 2 ||
     answerProfile.structureMarkers >= 1 ||
     answerProfile.punctuationMarkers >= 1;
+
+  /**
+   * Riktig svar er strengt lengre (ord) enn alle distraktører → ofte et gjettesignal.
+   * Tillat små forskjeller; slå inn ved tydelig gap eller lang fasit.
+   */
+  if (
+    answerProfile.words > maxDistractorWords &&
+    answerProfile.words >= 5 &&
+    answerProfile.words - maxDistractorWords >= 3
+  ) {
+    return "answer option is too dominant in word length vs distractors";
+  }
 
   if (
     answerLooksSpecific &&
@@ -1274,6 +1287,26 @@ function getAnswerOptionBalanceValidationError(question) {
   return null;
 }
 
+/**
+ * Sant når fasiten har flere ord enn den lengste distraktøren (unikt lengst blant de fire).
+ */
+function correctAnswerIsUniquelyLongestWords(question) {
+  const answer = String(question?.answer ?? "").trim();
+  const options = Array.isArray(question?.options) ? question.options : [];
+  if (!answer || options.length !== 4) {
+    return false;
+  }
+  const distractors = options.filter((option) => String(option).trim() !== answer);
+  if (distractors.length !== 3) {
+    return false;
+  }
+  const aw = getOptionBalanceProfile(answer).words;
+  const mw = Math.max(
+    ...distractors.map((d) => getOptionBalanceProfile(d).words)
+  );
+  return aw > mw;
+}
+
 function validateGeneratedQuiz(payload, expectedTheme, minQuestions = 3, maxQuestions = 5) {
   if (!payload || typeof payload !== "object") {
     return "Invalid payload";
@@ -1292,6 +1325,9 @@ function validateGeneratedQuiz(payload, expectedTheme, minQuestions = 3, maxQues
   ) {
     return `questions must be an array of ${minQuestions}–${maxQuestions} items`;
   }
+
+  let uniquelyLongestCorrectCount = 0;
+
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
     if (!q || typeof q !== "object") {
@@ -1326,7 +1362,23 @@ function validateGeneratedQuiz(payload, expectedTheme, minQuestions = 3, maxQues
     if (optionBalanceError) {
       return `question ${i} ${optionBalanceError}`;
     }
+
+    const answer = String(q.answer ?? "").trim();
+    if (answer && getOptionBalanceProfile(answer).words >= 4) {
+      if (correctAnswerIsUniquelyLongestWords(q)) {
+        uniquelyLongestCorrectCount += 1;
+      }
+    }
   }
+
+  const n = questions.length;
+  if (n >= 3) {
+    const maxAllowedUniquelyLongest = Math.max(1, Math.floor(n * 0.45));
+    if (uniquelyLongestCorrectCount > maxAllowedUniquelyLongest) {
+      return "quiz: correct answer is too often the longest option by word count";
+    }
+  }
+
   return null;
 }
 

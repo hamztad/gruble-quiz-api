@@ -139,6 +139,9 @@ Distraktørene må:
 - speile strukturen i riktig svar når svaret er spesifikt (for eksempel rolle + fagfelt + institusjon)
 - ikke være mye kortere, flatere eller mer generelle enn riktig svar
 - ikke gjøre riktig svar lett gjenkjennelig bare fordi det er mer presist formulert
+- variere aktivt lengde og detaljnivå mellom alle fire alternativer
+- unngå at riktig svar systematisk er det lengste eller mest utfyllende alternativet
+- la gjerne ett eller flere feilalternativer være like lange eller lengre enn fasiten når svartype krever mer enn ett kort uttrykk
 
 ---
 
