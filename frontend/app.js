@@ -82,7 +82,6 @@ function getQuestionState(questionId) {
       answered: false,
       lastFeedback: null,
       submittedAnswer: null,
-      checkingQuestion: false,
       mcSubmitting: false,
       writtenSubmitting: false,
       infoMessage: "",
@@ -384,13 +383,13 @@ function render() {
       <p class="muted">Synlige valg igjen: ${available.length}</p>
     `;
   } else if (qs.answerMode === "written") {
-    if (qs.writtenSubmitting || qs.checkingQuestion) {
+    if (qs.writtenSubmitting) {
       resultClass = "result hint";
       resultText = "";
     } else {
       resultText = "Skriv inn svar og trykk Send inn.";
     }
-    const formBusy = qs.writtenSubmitting || qs.checkingQuestion;
+    const formBusy = qs.writtenSubmitting;
     const writtenTaText =
       qs.writtenSubmitting && typeof qs.pendingWrittenDisplay === "string"
         ? qs.pendingWrittenDisplay
@@ -415,17 +414,12 @@ function render() {
             ${formBusy ? "disabled" : ""}
           ><span class="voice-mic-btn__inner">${VOICE_SVG_MIC}</span></button>
           <span class="voice-status" id="written-voice-status" aria-live="polite"></span>
-          <button type="button" class="ghost" id="check-written-suitability"${
-            formBusy ? " disabled" : ""
-          }>
-            Passer ikke for skrivesvar
-          </button>
         </div>
       </div>
     `;
   }
 
-  if (!qs.answered && !qs.checkingQuestion && qs.infoMessage) {
+  if (!qs.answered && qs.infoMessage) {
     resultClass = `result ${qs.infoClass || "hint"}`;
     resultText = qs.infoMessage;
   }
@@ -435,8 +429,6 @@ function render() {
     resultContent = loadingInlineRow("Sender inn svar…");
   } else if (qs.mcSubmitting) {
     resultContent = loadingInlineRow("Registrerer svar…");
-  } else if (qs.checkingQuestion) {
-    resultContent = loadingInlineRow("Sjekker spørsmålet…");
   } else if (revisionMode) {
     resultContent =
       '<p class="revision-placeholder">Dette spørsmålet revideres.</p>';
@@ -704,14 +696,6 @@ function render() {
       });
     }
 
-    const checkWrittenSuitabilityButton = document.getElementById(
-      "check-written-suitability"
-    );
-    if (checkWrittenSuitabilityButton) {
-      checkWrittenSuitabilityButton.addEventListener("click", () => {
-        checkQuestionSuitability(question, qs);
-      });
-    }
   }
 
   applyWrittenAnswerSubmitVoiceLock();
@@ -789,88 +773,6 @@ async function submitMultipleChoice(question, answer, qs) {
     qs.lastFeedback = { networkError: true, selectedAnswer: answer };
   } finally {
     qs.mcSubmitting = false;
-    render();
-  }
-}
-
-async function checkQuestionSuitability(question, qs) {
-  const ta = document.getElementById("written-answer");
-  qs.writtenComposeSnapshot =
-    ta && typeof ta.value === "string" ? ta.value : "";
-  qs.checkingQuestion = true;
-  qs.infoMessage = "";
-  render();
-
-  try {
-    const response = await fetch(`${API_BASE}/api/quiz/check-question`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        question: question.question,
-        questionId: question.id,
-        theme: state.theme,
-      }),
-    });
-
-    const result = await response.json();
-    qs.checkingQuestion = false;
-    qs.writtenComposeSnapshot = undefined;
-
-    if (!response.ok) {
-      qs.infoClass = "wrong";
-      qs.infoMessage =
-        typeof result.error === "string"
-          ? result.error
-          : "Kunne ikke sjekke spørsmålet.";
-      render();
-      return;
-    }
-
-    if (result.valid) {
-      qs.infoClass = "hint";
-      qs.infoMessage =
-        typeof result.message === "string"
-          ? result.message
-          : "Dette spørsmålet kan besvares skriftlig.";
-      render();
-      return;
-    }
-
-    const replacement = result.question;
-    if (!replacement || typeof replacement.question !== "string") {
-      qs.infoClass = "wrong";
-      qs.infoMessage = "Fikk ikke et nytt spørsmål tilbake.";
-      render();
-      return;
-    }
-
-    const currentQuestionId = String(question.id);
-    const replacementQuestionId = String(replacement.id ?? question.id);
-    state.totalScore += Number(result.points) || 0;
-    state.questions[state.currentIndex] = replacement;
-    if (replacementQuestionId !== currentQuestionId) {
-      delete state.byId[currentQuestionId];
-    }
-    state.byId[replacementQuestionId] = {
-      answerMode: "written",
-      removedOptions: [],
-      answered: false,
-      lastFeedback: null,
-      submittedAnswer: null,
-      checkingQuestion: false,
-      infoMessage: `${result.message} Du fikk ${
-        Number(result.points) || 0
-      } poeng. Her er et nytt spørsmål.`,
-      infoClass: "correct",
-    };
-    render();
-  } catch (error) {
-    qs.checkingQuestion = false;
-    qs.writtenComposeSnapshot = undefined;
-    qs.infoClass = "wrong";
-    qs.infoMessage = "Kunne ikke sjekke spørsmålet.";
     render();
   }
 }

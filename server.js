@@ -1053,7 +1053,9 @@ async function generateQuizWithOpenAI(
 
   let lastValidationError = null;
 
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  /* Flere forsøk når minnefilter forkaster enkelte spørsmål — mål er alltid nøyaktig questionCount. */
+  const maxGenerateAttempts = 5;
+  for (let attempt = 0; attempt < maxGenerateAttempts; attempt += 1) {
     const parsed = await parseJsonChatCompletion(
       openai.chat.completions.create({
         model,
@@ -1104,6 +1106,13 @@ async function generateQuizWithOpenAI(
           "all questions rejected as duplicates (quiz memory)";
         continue;
       }
+      if (workingQuestions.length < questionCount) {
+        console.log(
+          `[quiz memory] insufficientAfterFilter have=${workingQuestions.length} need=${questionCount} — retry generation`
+        );
+        lastValidationError = `quiz memory: expected exactly ${questionCount} questions after duplicate filter, got ${workingQuestions.length}`;
+        continue;
+      }
       workingQuestions = workingQuestions.map((q, idx) => ({
         ...q,
         id: idx + 1,
@@ -1111,8 +1120,8 @@ async function generateQuizWithOpenAI(
       const afterMemError = validateGeneratedQuiz(
         { ...parsed, questions: workingQuestions },
         theme,
-        workingQuestions.length,
-        workingQuestions.length,
+        questionCount,
+        questionCount,
         lookup
       );
       if (afterMemError) {

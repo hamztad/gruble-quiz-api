@@ -358,7 +358,7 @@ async function searchPixabayImageCandidates(query, limit = 6) {
 }
 
 /**
- * Henter Wikimedia først, deretter Pixabay (sekventielt — Pixabay som fallback etter Wikimedia).
+ * Henter Wikimedia og Pixabay parallelt (samme søk).
  * @param {string} query
  * @returns {Promise<{ wiki: QuizImageCandidate[], pix: QuizImageCandidate[] }>}
  */
@@ -373,23 +373,77 @@ async function fetchWikiThenPixCandidates(query) {
     return { wiki: [], pix: [] };
   }
 
-  const wiki = await searchWikimediaImageCandidates(q, 8).catch((e) => {
-    logWikimedia(
-      `filteredResults=0 reason=unhandledError msg=${JSON.stringify(String(e?.message || e))}`
-    );
-    return [];
-  });
-  const pix = await searchPixabayImageCandidates(q, 8).catch((e) => {
-    logPixabay(
-      `results=0 reason=unhandledError msg=${JSON.stringify(String(e?.message || e))}`
-    );
-    return [];
-  });
+  const [wiki, pix] = await Promise.all([
+    searchWikimediaImageCandidates(q, 8).catch((e) => {
+      logWikimedia(
+        `filteredResults=0 reason=unhandledError msg=${JSON.stringify(String(e?.message || e))}`
+      );
+      return [];
+    }),
+    searchPixabayImageCandidates(q, 8).catch((e) => {
+      logPixabay(
+        `results=0 reason=unhandledError msg=${JSON.stringify(String(e?.message || e))}`
+      );
+      return [];
+    }),
+  ]);
   return { wiki, pix };
 }
 
 /**
- * Samler kandidater fra begge kilder (Wikimedia først i arrayet, deretter Pixabay).
+ * Lett kildevekting ut fra tema — påvirker bare tie-break og nær scoring, ingen automatisk seier.
+ * @param {'wikimedia'|'pixabay'} source
+ * @param {string} theme
+ * @returns {{ bonus: number, reasons: string[] }}
+ */
+function getImageSourceBonusForCandidate(source, theme) {
+  const t = String(theme ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  const words = t.split(" ").filter(Boolean);
+  let wikiBonus = 0;
+  const wikiReasons = [];
+  let pixBonus = 0;
+  const pixReasons = [];
+
+  if (words.length >= 2) {
+    wikiBonus += 1.5;
+    wikiReasons.push("flere ord i tema (+1.5 mot Wikimedia-relevans)");
+  }
+
+  if (
+    /\b(historie|historisk|geografi|krig|krigen|slott|kirke|katedral|museum|monument|viking|middelalder|århundre|århundrer|fylke|kommune|nasjonal|unesco|storting|regjering|president|statsminister|kong|dronning|keiser|biografi|født|død)\b/i.test(
+      t
+    )
+  ) {
+    wikiBonus += 1.5;
+    wikiReasons.push("konkret sted/historie/personfelt (+1.5 mot Wikimedia)");
+  }
+
+  wikiBonus = Math.min(wikiBonus, 3);
+
+  if (words.length === 1 && words[0].length >= 3 && words[0].length <= 16) {
+    pixBonus += 1.5;
+    pixReasons.push("ettords tema (+1.5 mot Pixabay-dekor)");
+  }
+  if (words.length === 1 && words[0].length >= 3 && words[0].length <= 8) {
+    pixBonus += 0.5;
+    pixReasons.push("kort ettords tema (+0.5 mot Pixabay)");
+  }
+  pixBonus = Math.min(pixBonus, 2.5);
+
+  if (source === "wikimedia") {
+    return { bonus: wikiBonus, reasons: wikiReasons };
+  }
+  if (source === "pixabay") {
+    return { bonus: pixBonus, reasons: pixReasons };
+  }
+  return { bonus: 0, reasons: [] };
+}
+
+/**
+ * Samler kandidater fra begge kilder (Wikimedia først i arrayet, deretter Pixabay — kun for stabil rekkefølge).
  * @param {string} query
  * @returns {Promise<QuizImageCandidate[]>}
  */
@@ -467,20 +521,21 @@ function scoreImageTitleRelevance(title, theme, questionText) {
 }
 
 /**
- * Velg beste gyldige kandidat etter relevansscore (ikke bare første treff).
+ * Velg beste kandidat på tvers av kilder: tittel-relevans + lett kildebonus.
  * @param {QuizImageCandidate[]} candidates
  * @param {{ theme?: string, questionText?: string, minScore?: number }} context
+ * @returns {{ candidate: QuizImageCandidate | null, meta: object | null }}
  */
-function pickBestImageCandidate(candidates, context = {}) {
+function pickBestImageCandidateWithScore(candidates, context = {}) {
   if (!Array.isArray(candidates) || !candidates.length) {
-    return null;
+    return { candidate: null, meta: null };
   }
   const theme = String(context.theme ?? "").trim();
   const questionText = String(context.questionText ?? "").trim();
   const minScore =
     typeof context.minScore === "number" ? context.minScore : 2;
 
-  /** @type {{ c: QuizImageCandidate, score: number }[]} */
+  /** @type {{ c: QuizImageCandidate, base: number, bonus: number, total: number, reasons: string[] }[]} */
   const ranked = [];
   for (let i = 0; i < candidates.length; i += 1) {
     const c = candidates[i];
@@ -493,21 +548,61 @@ function pickBestImageCandidate(candidates, context = {}) {
     ) {
       continue;
     }
-    const score = scoreImageTitleRelevance(
-      c.title,
-      theme,
-      questionText
-    );
-    if (score < minScore) {
+    const base = scoreImageTitleRelevance(c.title, theme, questionText);
+    if (base < minScore) {
       continue;
     }
-    ranked.push({ c, score });
+    const { bonus, reasons } = getImageSourceBonusForCandidate(
+      c.source,
+      theme
+    );
+    ranked.push({
+      c,
+      base,
+      bonus,
+      total: base + bonus,
+      reasons,
+    });
   }
   if (!ranked.length) {
-    return null;
+    return { candidate: null, meta: null };
   }
-  ranked.sort((a, b) => b.score - a.score);
-  return ranked[0].c;
+  ranked.sort((a, b) => {
+    if (b.total !== a.total) {
+      return b.total - a.total;
+    }
+    if (b.base !== a.base) {
+      return b.base - a.base;
+    }
+    return String(a.c.source).localeCompare(String(b.c.source));
+  });
+  const top = ranked[0];
+  const second = ranked[1];
+  return {
+    candidate: top.c,
+    meta: {
+      baseScore: top.base,
+      sourceBonus: top.bonus,
+      totalScore: top.total,
+      bonusReasons: top.reasons,
+      runnerUp: second
+        ? {
+            source: second.c.source,
+            totalScore: second.total,
+            titleSnippet: String(second.c.title ?? "").slice(0, 60),
+          }
+        : null,
+    },
+  };
+}
+
+/**
+ * Bakoverkompatibel: returnerer bare vinner-kandidat.
+ * @param {QuizImageCandidate[]} candidates
+ * @param {{ theme?: string, questionText?: string, minScore?: number }} context
+ */
+function pickBestImageCandidate(candidates, context = {}) {
+  return pickBestImageCandidateWithScore(candidates, context).candidate;
 }
 
 /**
@@ -597,17 +692,26 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
 
   if (cohesive && primaryQuery) {
     const { wiki, pix } = await fetchWikiThenPixCandidates(primaryQuery);
-    const best =
-      pickBestImageCandidate(wiki, {
-        theme,
-        questionText: "",
-      }) ||
-      pickBestImageCandidate(pix, {
-        theme,
-        questionText: "",
-      });
-    const candidatesCount = wiki.length + pix.length;
+    const merged = [...wiki, ...pix];
+    const { candidate: best, meta: pickMeta } = pickBestImageCandidateWithScore(
+      merged,
+      { theme, questionText: "" }
+    );
+    const candidatesCount = merged.length;
+    log(
+      `candidates wiki=${wiki.length} pixabay=${pix.length} merged=${candidatesCount}`
+    );
     log(`chosenSource=${best ? best.source : "none"}`);
+    if (best && pickMeta) {
+      log(
+        `picked scores base=${pickMeta.baseScore} sourceBonus=${pickMeta.sourceBonus} total=${pickMeta.totalScore} reasons=${JSON.stringify(pickMeta.bonusReasons.join("; ") || "ingen kildebonus")}`
+      );
+      if (pickMeta.runnerUp) {
+        log(
+          `runnerUp source=${pickMeta.runnerUp.source} total=${pickMeta.runnerUp.totalScore} title=${JSON.stringify(pickMeta.runnerUp.titleSnippet)}`
+        );
+      }
+    }
     if (best) {
       log(`pickedTitle=${JSON.stringify(best.title)}`);
       log("mode=shared");
@@ -655,17 +759,21 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
       continue;
     }
     const { wiki, pix } = await fetchWikiThenPixCandidates(qry);
-    const best =
-      pickBestImageCandidate(wiki, {
-        theme,
-        questionText: String(qq?.question ?? ""),
-      }) ||
-      pickBestImageCandidate(pix, {
-        theme,
-        questionText: String(qq?.question ?? ""),
-      });
-    const candidatesCount = wiki.length + pix.length;
+    const merged = [...wiki, ...pix];
+    const { candidate: best, meta: pickMeta } = pickBestImageCandidateWithScore(
+      merged,
+      { theme, questionText: String(qq?.question ?? "") }
+    );
+    const candidatesCount = merged.length;
+    log(
+      `candidates wiki=${wiki.length} pixabay=${pix.length} merged=${candidatesCount} questionIndex=${i}`
+    );
     log(`chosenSource=${best ? best.source : "none"} questionIndex=${i}`);
+    if (best && pickMeta) {
+      log(
+        `picked scores base=${pickMeta.baseScore} sourceBonus=${pickMeta.sourceBonus} total=${pickMeta.totalScore} reasons=${JSON.stringify(pickMeta.bonusReasons.join("; ") || "ingen kildebonus")} questionIndex=${i}`
+      );
+    }
     if (best) {
       log(`pickedTitle=${JSON.stringify(best.title)}`);
       out.push({
