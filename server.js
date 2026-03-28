@@ -20,6 +20,26 @@ const GENERATE_QUIZ_SYSTEM = readPromptFile("generateQuiz.txt");
 const CHECK_QUESTION_SYSTEM = readPromptFile("checkQuestionSuitability.txt");
 const EVALUATE_PROTEST_SYSTEM = readPromptFile("evaluateProtest.txt");
 
+/** Nytt: maksimal lengde og ord for tema ved quizgenerering fra brukerinput. */
+const THEME_INPUT_MAX_CHARS = 50;
+const THEME_INPUT_MAX_WORDS = 3;
+
+/**
+ * Nytt: avvis for langt tema før OpenAI-kall (testgenerering).
+ * @returns {string|null} feilmelding på norsk, eller null hvis OK
+ */
+function validateThemeForQuizInput(theme) {
+  const raw = String(theme ?? "").trim();
+  if (raw.length > THEME_INPUT_MAX_CHARS) {
+    return "Tema er for langt (maks 50 tegn).";
+  }
+  const words = raw.split(/\s+/).filter(Boolean);
+  if (words.length > THEME_INPUT_MAX_WORDS) {
+    return "Tema kan ha maks 3 ord.";
+  }
+  return null;
+}
+
 app.use(express.json());
 app.use(cors());
 
@@ -285,6 +305,32 @@ function pickQuestionFromBody(body, questions) {
 }
 
 /**
+ * Nytt: defensiv sjekk for flerords navn — brukes til oppslag (3 ord) og til valgfri split
+ * (split aktiveres kun for nøyaktig to ord, se maybeBuildThemeLookupSupport).
+ * Krever stor forbokstav per ord, kun bokstaver (Unicode), rimelig ordlengde.
+ */
+function themeLooksLikeMultiWordName(theme) {
+  const raw = String(theme ?? "").trim();
+  const words = raw.split(/\s+/).filter(Boolean);
+  if (words.length < 2 || words.length > 3) {
+    return false;
+  }
+  for (let i = 0; i < words.length; i += 1) {
+    const w = words[i];
+    if (w.length < 2 || w.length > 14) {
+      return false;
+    }
+    if (!/^[\p{L}]+$/u.test(w)) {
+      return false;
+    }
+    if (!/^\p{Lu}/u.test(w)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Korte eller tvetydige tema er mer utsatt for hallusinasjoner.
  * Denne heuristikken er bevisst enkel og heller mot oppslag for korte tema.
  */
@@ -329,6 +375,15 @@ function themeNeedsLookupSupport(theme) {
 
   if (words.length === 2) {
     return words.every((word) => word.length <= 14) && !/[,:;()/]/.test(raw);
+  }
+
+  /** Nytt: tre ord kun når det ser ut som flerords navn (unngår brede fraser). */
+  if (words.length === 3) {
+    return (
+      words.every((word) => word.length <= 14) &&
+      !/[,:;()/]/.test(raw) &&
+      themeLooksLikeMultiWordName(raw)
+    );
   }
 
   return false;
@@ -618,21 +673,85 @@ async function buildWikipediaLookupContext(theme) {
   };
 }
 
+/**
+ * Nytt: per-navn Wikipedia-oppslag og samlet kontekst [NAVN 1] / [NAVN 2] / …
+ * (samme regler som buildWikipediaLookupContext per del).
+ */
+async function buildSplitNameLookupContext(parts) {
+  const sections = [];
+  const titleSet = new Set();
+  const nameTitleSet = new Set();
+  const personTitleSet = new Set();
+  let hasPersonContext = false;
+
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i];
+    const chunk = await buildWikipediaLookupContext(part);
+    if (chunk.hasPersonContext) {
+      hasPersonContext = true;
+    }
+    (chunk.titles || []).forEach((t) => titleSet.add(t));
+    (chunk.nameTitles || []).forEach((t) => nameTitleSet.add(t));
+    (chunk.personTitles || []).forEach((t) => personTitleSet.add(t));
+    const block = String(chunk.context ?? "").trim();
+    if (block) {
+      sections.push(`[NAVN ${i + 1}]\n${block}`);
+    }
+  }
+
+  return {
+    titles: [...titleSet],
+    nameTitles: [...nameTitleSet],
+    personTitles: [...personTitleSet],
+    hasPersonContext,
+    context: sections.join("\n\n"),
+    splitParts: parts,
+  };
+}
+
+/** Nytt: ingen brukbar tekst fra frase-oppslag → forsøk split (konservativt). */
+function isWeakThemeLookupContext(lookup) {
+  return !String(lookup?.context ?? "").trim();
+}
+
 async function maybeBuildThemeLookupSupport(theme) {
+  const emptyLookup = {
+    vague: false,
+    titles: [],
+    nameTitles: [],
+    personTitles: [],
+    hasPersonContext: false,
+    context: "",
+    split: false,
+    splitParts: [],
+  };
+
   const vague = themeNeedsLookupSupport(theme);
   if (!vague) {
-    return {
-      vague: false,
-      titles: [],
-      nameTitles: [],
-      personTitles: [],
-      hasPersonContext: false,
-      context: "",
-    };
+    return { ...emptyLookup };
   }
 
   try {
-    const lookup = await buildWikipediaLookupContext(theme);
+    let lookup = await buildWikipediaLookupContext(theme);
+    let split = false;
+    let splitParts = [];
+
+    if (
+      isWeakThemeLookupContext(lookup) &&
+      themeLooksLikeMultiWordName(theme)
+    ) {
+      const parts = String(theme).trim().split(/\s+/).filter(Boolean);
+      /** Kun to-ords navn splittes; tre-ords frase behandles som helhet (ellers feil intensjon). */
+      if (parts.length === 2) {
+        const merged = await buildSplitNameLookupContext(parts);
+        if (merged.context.trim()) {
+          lookup = merged;
+          split = true;
+          splitParts = parts;
+        }
+      }
+    }
+
     return {
       vague: true,
       titles: Array.isArray(lookup?.titles) ? lookup.titles : [],
@@ -642,6 +761,8 @@ async function maybeBuildThemeLookupSupport(theme) {
         : [],
       hasPersonContext: Boolean(lookup?.hasPersonContext),
       context: typeof lookup?.context === "string" ? lookup.context : "",
+      split,
+      splitParts,
     };
   } catch (err) {
     console.warn("Wikipedia lookup failed:", err.message);
@@ -652,6 +773,8 @@ async function maybeBuildThemeLookupSupport(theme) {
       personTitles: [],
       hasPersonContext: false,
       context: "",
+      split: false,
+      splitParts: [],
     };
   }
 }
@@ -690,7 +813,15 @@ Du kan variere spørsmål mellom navnefakta (fra NAVNEFAKTA) og konkrete enkeltf
 - hvis [PERSONER FRA OPPSLAG] mangler eller er for tynt til entydige spørsmål, hold deg til [NAVNEFAKTA] eller generelle trygge fakta
 
 Ikke finn på konkrete personer, verk, hendelser eller kampanjer utover det som følger tydelig av faktastøtten.
-Hvis faktastøtten ikke støtter en spesifikk retning, hold spørsmålene generelle, forsiktige og dokumenterbare.`;
+Hvis faktastøtten ikke støtter en spesifikk retning, hold spørsmålene generelle, forsiktige og dokumenterbare.${
+    lookup?.split
+      ? `
+
+Nytt (to-ords navn splittet, oppslag per del): Faktastøtten er gruppert som [NAVN 1], [NAVN 2] osv. Hver gruppe gjelder kun det navnet — ikke bland fakta mellom grupper.
+Lag spørsmål som varierer mellom navnedelene når flere grupper har stoff; bruk fortsatt bare innhold som står eksplisitt i den aktuelle gruppen.
+Unngå formuleringer som «vanlig», «populær», «kjent for» og nære varianter.`
+      : ""
+  }`;
   } else if (lookup?.vague) {
     prompt += `
 
@@ -725,6 +856,10 @@ async function generateQuizWithOpenAI(openai, model, theme, questionCount) {
     );
     console.log(
       `[quiz lookup] hasPersonContext=${lookup.hasPersonContext ? "true" : "false"}`
+    );
+    console.log(`[quiz lookup] split=${lookup.split ? "true" : "false"}`);
+    console.log(
+      `[quiz lookup] parts=${JSON.stringify(lookup.splitParts || [])}`
     );
   }
   const userPrompt = buildQuizUserPrompt(theme, questionCount, lookup);
@@ -1145,6 +1280,12 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
     typeof req.body?.theme === "string" ? req.body.theme.trim() : "";
   if (!theme) {
     res.status(400).json({ error: "Missing or empty theme" });
+    return;
+  }
+
+  const themeInputError = validateThemeForQuizInput(theme);
+  if (themeInputError) {
+    res.status(400).json({ error: themeInputError });
     return;
   }
 

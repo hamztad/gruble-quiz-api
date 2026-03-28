@@ -223,6 +223,18 @@ async function generateNewQuiz() {
     return;
   }
 
+  if (raw) {
+    if (raw.length > 50) {
+      statusEl.textContent = "Feilet: Tema er for langt (maks 50 tegn).";
+      return;
+    }
+    const words = raw.split(/\s+/).filter(Boolean);
+    if (words.length > 3) {
+      statusEl.textContent = "Feilet: Tema kan ha maks 3 ord.";
+      return;
+    }
+  }
+
   btn.disabled = true;
   statusEl.textContent = "Genererer quiz…";
 

@@ -33,6 +33,11 @@ p {
   color: #6b7280;
 }
 
+.theme-input-hint {
+  margin: -4px 0 16px;
+  font-size: 13px;
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;
