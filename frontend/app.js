@@ -30,7 +30,7 @@ const MAX_PROTEST_USER_MESSAGES = 5;
 const state = {
   theme: "",
   /** @type {'easy'|'normal'|'hard'} */
-  difficulty: "normal",
+  difficulty: "easy",
   /** @type {null | { url: string, title?: string, credit: string, source?: string, pageUrl?: string }} */
   sharedImage: null,
   questions: [],
@@ -44,7 +44,7 @@ const app = document.getElementById("app");
 
 /** @param {unknown} d */
 function difficultyDisplayLabel(d) {
-  const x = String(d ?? "normal").toLowerCase();
+  const x = String(d ?? "easy").toLowerCase();
   if (x === "easy") return "Lett";
   if (x === "hard") return "Vanskelig";
   return "Normal";
@@ -223,7 +223,7 @@ async function loadQuiz() {
     state.difficulty =
       diffRaw === "easy" || diffRaw === "hard" || diffRaw === "normal"
         ? diffRaw
-        : "normal";
+        : "easy";
     state.sharedImage =
       data.sharedImage &&
       typeof data.sharedImage === "object" &&

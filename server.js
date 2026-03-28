@@ -40,30 +40,36 @@ function normalizeQuizDifficulty(raw) {
   if (s === "hard" || s === "vanskelig") {
     return "hard";
   }
-  return "normal";
+  if (s === "normal") {
+    return "normal";
+  }
+  return "easy";
 }
 
 /** Poengmultiplikator for riktige svar (server-styrt ut fra lagret quiz). */
 function getQuizDifficultyPointMultiplier(difficulty) {
   switch (normalizeQuizDifficulty(difficulty)) {
     case "easy":
-      return 0.9;
-    case "hard":
-      return 1.5;
-    default:
       return 1;
+    case "normal":
+      return 1.5;
+    case "hard":
+      return 2;
+    default:
+      return 1.5;
   }
 }
 
 const QUIZ_DIFFICULTY_GENERATION_INSTRUCTIONS = {
   easy: `VANSKEGRAD — LETT
-- Velg velkjente fakta og tydelige spørsmål som krever grunnleggende kunnskap.
-- Feilsvar skal være plausibel feil, men klart svakere enn fasiten for den som kan stoffet.`,
-  normal: `VANSKEGRAD — NORMAL (standard)
 - Balanse mellom tilgjengelighet og kunnskapskrav, i tråd med øvrige regler i denne systemmeldingen.`,
-  hard: `VANSKEGRAD — VANSKELIG
+  normal: `VANSKEGRAD — NORMAL
 - Still mer presise eller spesifikke spørsmål som krever solid kunnskap, fortsatt med nøyaktig én entydig, dokumenterbar fasit.
-- Lag feilsvar som er mer krevende og sannsynlige for noen som kan litt, uten flere riktige svar.
+- Lag feilsvar som er mer krevende og sannsynlige for noen som kan litt, uten flere riktige svar.`,
+  hard: `VANSKEGRAD — VANSKELIG
+- Still tydelig mer krevende spørsmål enn NORMAL, med smalere eller mindre opplagte, men fortsatt godt dokumenterbare fakta.
+- Lag feilsvar som ligger tett opptil fasiten i type, detaljnivå eller periode, uten at flere svar kan forsvares.
+- Foretrekk spørsmål som skiller god kunnskap fra overflatisk gjetting.
 - Ikke bruk obskur eller udokumenterbar trivia som bryter trygghets- og sannhetskravene over.`,
 };
 
@@ -179,7 +185,11 @@ async function setupTestTable() {
     `);
     await pool.query(`
       ALTER TABLE quizzes
-      ADD COLUMN IF NOT EXISTS difficulty TEXT NOT NULL DEFAULT 'normal'
+      ADD COLUMN IF NOT EXISTS difficulty TEXT NOT NULL DEFAULT 'easy'
+    `);
+    await pool.query(`
+      ALTER TABLE quizzes
+      ALTER COLUMN difficulty SET DEFAULT 'easy'
     `);
     /* Nytt: minne for duplikatkontroll av spørsmålstekster (første versjon). */
     await pool.query(`
@@ -228,7 +238,7 @@ async function setupTestTable() {
               answer: "Oslo",
             },
           ]),
-          "normal",
+          "easy",
         ]
       );
     }
@@ -996,7 +1006,7 @@ async function maybeBuildThemeLookupSupport(theme) {
  * Bygger brukerprompt til quizgenerering.
  * @param {boolean} subjectMode Nytt: når true, tolkes temaet som skolefag (eksplisitt brukervalg).
  * @param {{ needOnly: number, existingQuestions: object[] }|null} topUp når flere modellkall trengs for å nå 5 spørsmål
- * @param {string} [difficulty] easy | normal | hard (normal hvis utelatt)
+ * @param {string} [difficulty] easy | normal | hard (easy hvis utelatt)
  */
 function buildQuizUserPrompt(
   theme,
@@ -1004,7 +1014,7 @@ function buildQuizUserPrompt(
   lookup,
   subjectMode = false,
   topUp = null,
-  difficulty = "normal"
+  difficulty = "easy"
 ) {
   const themeJson = JSON.stringify(theme);
   const need =
@@ -1163,7 +1173,7 @@ async function generateQuizWithOpenAI(
   questionCount,
   memoryOptions = null,
   subjectMode = false,
-  difficulty = "normal"
+  difficulty = "easy"
 ) {
   const diffNorm = normalizeQuizDifficulty(difficulty);
   console.log(`[quiz mode] subjectMode=${subjectMode ? "true" : "false"}`);
@@ -2300,7 +2310,7 @@ app.post("/api/quiz/check-question", async (req, res) => {
 
   let replacementQuestion;
   let replacementMemoryPool = null;
-  let replacementDifficulty = "normal";
+  let replacementDifficulty = "easy";
   try {
     const dbUrl = process.env.DATABASE_URL;
     if (dbUrl) {
@@ -2321,7 +2331,7 @@ app.post("/api/quiz/check-question", async (req, res) => {
           );
         }
       } catch {
-        replacementDifficulty = "normal";
+        replacementDifficulty = "easy";
       }
     }
     const replacementQuiz = await generateQuizWithOpenAI(
