@@ -266,30 +266,123 @@ async function findImageCandidates(query) {
   }
 
   const [wiki, pix] = await Promise.all([
-    searchWikimediaImageCandidates(q, 5).catch(() => []),
-    searchPixabayImageCandidates(q, 5).catch(() => []),
+    searchWikimediaImageCandidates(q, 8).catch(() => []),
+    searchPixabayImageCandidates(q, 8).catch(() => []),
   ]);
 
   return [...wiki, ...pix];
 }
 
-function pickBestImageCandidate(candidates) {
-  if (!Array.isArray(candidates)) {
+function normalizeForImageMatch(s) {
+  return String(s ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "");
+}
+
+/** Nøkkelord til relevansscore (samme stoppord som spørsmålssøk). */
+function tokenizeForImageScoring(text) {
+  const raw = String(text ?? "")
+    .toLowerCase()
+    .replace(/[^\p{L}\d\s]/gu, " ");
+  const words = raw
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter((w) => w.length >= 3 && !IMAGE_QUERY_STOPWORDS.has(w));
+  return [...new Set(words)];
+}
+
+/**
+ * Nytt: filtrer bort åpenbart generiske filnavn uten semantisk innhold.
+ */
+function isLikelyGenericImageTitle(title) {
+  const stem = String(title ?? "")
+    .replace(/\.[a-z0-9]{2,5}$/i, "")
+    .trim();
+  if (stem.length < 5) {
+    return true;
+  }
+  if (/^(img|dsc|p\d{3,}|dji|gopr|mvi)[\s_-]?\d*$/i.test(stem)) {
+    return true;
+  }
+  if (/^\d+$/.test(stem)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Nytt: enkel relevansscore tittel mot tema + spørsmål (ingen gjetting).
+ * Under minScore → kandidaten brukes ikke.
+ */
+function scoreImageTitleRelevance(title, theme, questionText) {
+  if (isLikelyGenericImageTitle(title)) {
+    return -1000;
+  }
+  const nt = normalizeForImageMatch(title).replace(/\s+/g, " ");
+  let score = 0;
+
+  const normTheme = normalizeForImageMatch(theme).replace(/\s+/g, " ").trim();
+  if (normTheme.length >= 4 && nt.includes(normTheme)) {
+    score += 6;
+  }
+  const themeToks = tokenizeForImageScoring(theme);
+  for (let i = 0; i < themeToks.length; i += 1) {
+    if (nt.includes(themeToks[i])) {
+      score += 3;
+    }
+  }
+  const qToks = tokenizeForImageScoring(questionText);
+  for (let j = 0; j < qToks.length; j += 1) {
+    if (nt.includes(qToks[j])) {
+      score += 2;
+    }
+  }
+  return score;
+}
+
+/**
+ * Velg beste gyldige kandidat etter relevansscore (ikke bare første treff).
+ * @param {QuizImageCandidate[]} candidates
+ * @param {{ theme?: string, questionText?: string, minScore?: number }} context
+ */
+function pickBestImageCandidate(candidates, context = {}) {
+  if (!Array.isArray(candidates) || !candidates.length) {
     return null;
   }
+  const theme = String(context.theme ?? "").trim();
+  const questionText = String(context.questionText ?? "").trim();
+  const minScore =
+    typeof context.minScore === "number" ? context.minScore : 2;
+
+  /** @type {{ c: QuizImageCandidate, score: number }[]} */
+  const ranked = [];
   for (let i = 0; i < candidates.length; i += 1) {
     const c = candidates[i];
     if (
-      c &&
-      typeof c.url === "string" &&
-      /^https:\/\//i.test(c.url) &&
-      typeof c.credit === "string" &&
-      c.credit.trim()
+      !c ||
+      typeof c.url !== "string" ||
+      !/^https:\/\//i.test(c.url) ||
+      typeof c.credit !== "string" ||
+      !c.credit.trim()
     ) {
-      return c;
+      continue;
     }
+    const score = scoreImageTitleRelevance(
+      c.title,
+      theme,
+      questionText
+    );
+    if (score < minScore) {
+      continue;
+    }
+    ranked.push({ c, score });
   }
-  return null;
+  if (!ranked.length) {
+    return null;
+  }
+  ranked.sort((a, b) => b.score - a.score);
+  return ranked[0].c;
 }
 
 /**
@@ -379,9 +472,13 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
 
   if (cohesive && primaryQuery) {
     const candidates = await findImageCandidates(primaryQuery);
-    const best = pickBestImageCandidate(candidates);
+    const best = pickBestImageCandidate(candidates, {
+      theme,
+      questionText: "",
+    });
     if (best) {
       log(`source=${best.source}`);
+      log(`pickedTitle=${JSON.stringify(best.title)}`);
       log("mode=shared");
       const shared = {
         url: best.url,
@@ -398,6 +495,9 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
         return rest;
       });
       return { questions: withQ, sharedImage: shared };
+    }
+    if (candidates.length > 0) {
+      log("relevance=no candidate met minScore (shared)");
     }
     log("mode=none (cohesive, no acceptable shared hit)");
     const bare = questions.map((q) => {
@@ -424,9 +524,13 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
       continue;
     }
     const candidates = await findImageCandidates(qry);
-    const best = pickBestImageCandidate(candidates);
+    const best = pickBestImageCandidate(candidates, {
+      theme,
+      questionText: String(qq?.question ?? ""),
+    });
     if (best) {
       log(`source=${best.source} questionIndex=${i}`);
+      log(`pickedTitle=${JSON.stringify(best.title)}`);
       out.push({
         ...qq,
         image: {
@@ -440,6 +544,9 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
         },
       });
     } else {
+      if (candidates.length > 0) {
+        log(`relevance=no candidate met minScore questionIndex=${i}`);
+      }
       const { image, ...rest } = qq;
       out.push(rest);
     }
