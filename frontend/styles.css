@@ -164,6 +164,23 @@ button:disabled {
   border-top-color: rgba(153, 27, 27, 0.25);
 }
 
+.feedback-eval-heading {
+  margin: 0 0 6px;
+  font-size: inherit;
+}
+
+.feedback-eval-text {
+  margin: 0 0 12px;
+  font-size: inherit;
+  line-height: 1.5;
+}
+
+.feedback-verdict-points {
+  margin: 0;
+  font-size: inherit;
+  line-height: 1.5;
+}
+
 .feedback-verdict {
   margin: 0;
   font-size: inherit;
@@ -221,11 +238,44 @@ button:disabled {
   flex-shrink: 0;
 }
 
+.voice-mic-btn--round {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.voice-mic-btn__inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.voice-mic-btn__svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+
 .voice-mic-btn--recording {
   background: #fef2f2 !important;
   border-color: #f87171 !important;
-  color: #b91c1c !important;
-  font-weight: 600;
+  color: #dc2626 !important;
+  animation: voice-mic-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes voice-mic-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(220, 38, 38, 0);
+  }
 }
 
 .voice-status {
@@ -233,6 +283,11 @@ button:disabled {
   color: #6b7280;
   flex: 1 1 140px;
   min-width: 0;
+}
+
+.voice-status--recording {
+  color: #b91c1c;
+  font-weight: 600;
 }
 
 .voice-status--error {
@@ -390,36 +445,169 @@ button:disabled {
   min-height: 96px;
 }
 
+.protest-block--hidden {
+  display: none !important;
+}
+
+.protest-finalized-note {
+  margin: 0 0 16px;
+  font-size: 15px;
+  line-height: 1.5;
+  color: #374151;
+}
+
+.protest-revision-points {
+  margin: 0 0 16px;
+  font-size: 15px;
+  line-height: 1.5;
+  font-weight: 600;
+  color: #111827;
+}
+
+.revision-heading {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #4b5563;
+}
+
+.revision-placeholder {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.5;
+  color: #4b5563;
+}
+
 .protest-modal__actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   justify-content: flex-end;
+  margin-bottom: 0;
+}
+
+.protest-modal__actions--form {
+  margin-top: 4px;
+}
+
+.protest-modal__actions--chat {
+  justify-content: flex-start;
+  margin-top: 12px;
+}
+
+.protest-end-btn {
+  font-weight: 600;
+}
+
+.protest-chat-composer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.protest-chat-composer__input {
+  flex: 1 1 160px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  font-size: 16px;
+  font-family: inherit;
+}
+
+.protest-thread-limit-msg {
+  margin: 10px 0 0;
+  font-size: 14px;
+  color: #6b7280;
+}
+
+.protest-chat {
   margin-bottom: 14px;
 }
 
-.protest-output {
-  min-height: 1em;
-  padding: 12px;
-  border-radius: 10px;
-  font-size: 15px;
-  line-height: 1.45;
+.protest-chat__thread {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 10px;
   background: #f9fafb;
   border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.protest-output.protest-output--error {
+.protest-chat__msg {
+  max-width: 92%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.45;
+  border: 1px solid transparent;
+}
+
+.protest-chat__msg--user {
+  align-self: flex-end;
+  background: #eef2ff;
+  border-color: #c7d2fe;
+  color: #1e1b4b;
+}
+
+.protest-chat__msg--assistant {
+  align-self: flex-start;
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #065f46;
+}
+
+.protest-chat__msg--system {
+  align-self: stretch;
+  max-width: none;
   background: #fef2f2;
   border-color: #fecaca;
   color: #991b1b;
 }
 
-.protest-output.protest-output--ok {
-  background: #f0fdf4;
-  border-color: #bbf7d0;
-  color: #166534;
+.protest-chat__msg--pending {
+  opacity: 0.95;
 }
 
-.protest-output.protest-output--loading {
-  color: #6b7280;
+.protest-chat__meta {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+  margin-bottom: 4px;
+}
+
+.protest-chat__body p {
+  margin: 0 0 6px;
+}
+
+.protest-chat__body p:last-child {
+  margin-bottom: 0;
+}
+
+.protest-chat__typing {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.protest-chat__spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #a7f3d0;
+  border-top-color: #059669;
+  border-radius: 50%;
+  animation: protest-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes protest-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

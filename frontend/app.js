@@ -1,16 +1,48 @@
 const API_BASE = "https://gruble-quiz-api.onrender.com";
 
+const VOICE_SVG_MIC = `<svg class="voice-mic-btn__svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6.2 6.72V21h2v-3.28c3.48-.49 6.2-3.31 6.2-6.72h-1.7z"/></svg>`;
+
+const VOICE_SVG_STOP = `<svg class="voice-mic-btn__svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 6h12v12H6V6z"/></svg>`;
+
+const MAX_PROTEST_USER_MESSAGES = 5;
+
+/**
+ * @typedef {Object} ProtestMessageSegment
+ * @property {'user'|'assistant'|'system'} kind
+ * @property {string} innerHtml
+ */
+
+/**
+ * @typedef {Object} ProtestStateFinalized
+ * @property {'finalized'} status
+ */
+
+/**
+ * @typedef {Object} ProtestStateActive
+ * @property {'active'} status
+ * @property {'form'|'chat'} phase
+ * @property {string|null} protestType valgt type etter første vellykkede sending
+ * @property {number} userMessageCount antall brukermeldinger sendt i tråden
+ * @property {ProtestMessageSegment[]} messages trådinnhold (kun i minnet til siden lastes på nytt)
+ */
+
+/** @type {Record<string, ProtestStateFinalized | ProtestStateActive>} */
 const state = {
   theme: "",
   questions: [],
   currentIndex: 0,
   totalScore: 0,
   byId: {},
+  protestStateByQuestionId: {},
 };
 
 const app = document.getElementById("app");
 
 let protestTargetQuestion = null;
+let protestSubmitInFlight = false;
+
+/** Gjeldende aktiv protest (peker inn i state.protestStateByQuestionId når status === 'active') */
+let protestSession = null;
 
 function shuffleArray(values) {
   const copy = [...values];
@@ -42,9 +74,116 @@ function getQuestionState(questionId) {
       checkingQuestion: false,
       infoMessage: "",
       infoClass: "hint",
+      underRevision: false,
+      removedFromSession: false,
     };
   }
   return state.byId[key];
+}
+
+function protestRemovesQuestionFromSession(status) {
+  const s = String(status ?? "").toLowerCase();
+  return s === "approved" || s === "partial";
+}
+
+function applyProtestRevisionSuccess(questionId) {
+  const qs = getQuestionState(questionId);
+  qs.underRevision = true;
+  qs.removedFromSession = true;
+  qs.answered = true;
+  state.protestStateByQuestionId[String(questionId)] = { status: "finalized" };
+  protestSession = null;
+}
+
+function normalizeAnswerText(s) {
+  return String(s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function escapeRegExp(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Fjerner deltakers svar fra starten av vurderingstekst når det allerede vises over streken.
+ * Håndterer f.eks. «Du svarte: <svar>.» før selve vurderingen.
+ */
+function stripAnswerPrefixFromFeedback(answer, feedback) {
+  const answerRaw = String(answer ?? "").trim();
+  const original = String(feedback ?? "").trim();
+  if (!answerRaw || !original) {
+    return original;
+  }
+
+  const answerNorm = normalizeAnswerText(answerRaw);
+  const answerLead = new RegExp(
+    "^" + escapeRegExp(answerRaw) + "\\s*[.!?:,;\\-–—]*\\s*",
+    "i"
+  );
+
+  let s = original;
+  const metaPrefix =
+    /^(du\s+svarte|du\s+skrev|ditt\s+svar|her\s+(?:er|var)\s+ditt\s+svar)\s*:\s*/i;
+  const meta = s.match(metaPrefix);
+  if (meta) {
+    s = s.slice(meta[0].length).trim();
+  }
+  s = s.replace(/^[«"'"„]+/, "").trim();
+
+  const afterAnswer = s
+    .replace(answerLead, "")
+    .trim()
+    .replace(/^[«"'"„]+/, "")
+    .trim();
+  if (afterAnswer.length > 0 && afterAnswer.length < s.length) {
+    return afterAnswer;
+  }
+
+  if (normalizeAnswerText(s).startsWith(answerNorm) && s.length >= answerRaw.length) {
+    let stripped = s.slice(answerRaw.length).trim();
+    stripped = stripped.replace(/^[\s:;,\-.!?")\]]+/, "").trim();
+    if (stripped.length > 0) {
+      return stripped;
+    }
+  }
+
+  if (normalizeAnswerText(original).startsWith(answerNorm)) {
+    let stripped = original.slice(answerRaw.length).trim();
+    stripped = stripped.replace(/^[\s:;,\-.!?")\]]+/, "").trim();
+    if (stripped.length > 0) {
+      return stripped;
+    }
+  }
+
+  return original;
+}
+
+function showProtestRevisionOutcomeInModal(protestPointsAwarded) {
+  document.getElementById("protest-finalized-view")?.classList.add("protest-block--hidden");
+  document.getElementById("protest-active-view")?.classList.add("protest-block--hidden");
+  document.getElementById("protest-revision-view")?.classList.remove("protest-block--hidden");
+  const ptsEl = document.getElementById("protest-revision-points");
+  if (ptsEl) {
+    const n = Number(protestPointsAwarded);
+    const display = Number.isFinite(n) ? n : 0;
+    ptsEl.textContent =
+      display === 1
+        ? "Du får 1 poeng for denne protesten."
+        : `Du får ${display} poeng for denne protesten.`;
+  }
+}
+
+function advanceToNextPlayableQuestion() {
+  let next = state.currentIndex + 1;
+  while (next < state.questions.length) {
+    const q = state.questions[next];
+    if (!getQuestionState(q.id).underRevision) {
+      state.currentIndex = next;
+      render();
+      return;
+    }
+    next += 1;
+  }
+  render();
 }
 
 async function loadQuiz() {
@@ -62,6 +201,8 @@ async function loadQuiz() {
     state.currentIndex = 0;
     state.totalScore = 0;
     state.byId = {};
+    state.protestStateByQuestionId = {};
+    protestSession = null;
 
     render();
     return true;
@@ -123,12 +264,17 @@ function render() {
   const question = state.questions[state.currentIndex];
   const qs = getQuestionState(question.id);
   const isLast = state.currentIndex === state.questions.length - 1;
+  const revisionMode = Boolean(qs.underRevision);
 
   let answerBlock = "";
   let resultText = "";
   let resultClass = "result";
 
-  if (qs.checkingQuestion) {
+  if (revisionMode) {
+    answerBlock = "";
+    resultClass = "result hint";
+    resultText = "";
+  } else if (qs.checkingQuestion) {
     resultClass = "result hint";
     resultText = "Sjekker spørsmålet…";
   } else if (qs.answered && qs.lastFeedback && qs.lastFeedback.networkError) {
@@ -193,13 +339,11 @@ function render() {
           <button type="button" class="primary" id="written-submit">Send inn</button>
           <button
             type="button"
-            class="ghost voice-mic-btn"
+            class="ghost voice-mic-btn voice-mic-btn--round"
             data-voice-target="written-answer"
             data-voice-status="written-voice-status"
-            aria-label="Tale inn svar"
-          >
-            Tale
-          </button>
+            aria-label="Start taleopptak"
+          ><span class="voice-mic-btn__inner">${VOICE_SVG_MIC}</span></button>
           <span class="voice-status" id="written-voice-status" aria-live="polite"></span>
           <button type="button" class="ghost" id="check-written-suitability">
             Passer ikke for skrivesvar
@@ -215,7 +359,10 @@ function render() {
   }
 
   let resultContent;
-  if (
+  if (revisionMode) {
+    resultContent =
+      '<p class="revision-placeholder">Dette spørsmålet revideres.</p>';
+  } else if (
     qs.answered &&
     qs.lastFeedback &&
     qs.answerMode === "written" &&
@@ -228,17 +375,26 @@ function render() {
     const ptsDisplay = Number.isFinite(ptsNum) ? ptsNum : 0;
     const quote =
       qs.submittedAnswer != null ? String(qs.submittedAnswer) : "";
-    const feedbackPart = feedback
-      ? `${escapeHtml(feedback)} `
+    const feedbackTrim = feedback.trim();
+    const feedbackBody = stripAnswerPrefixFromFeedback(quote, feedbackTrim);
+    const trivialFeedback =
+      !feedbackBody || /^ingen forklaring\.?$/i.test(feedbackBody);
+    const evalDistinct =
+      !trivialFeedback &&
+      normalizeAnswerText(feedbackBody) !== normalizeAnswerText(quote);
+    const evalSection = evalDistinct
+      ? `<p class="feedback-eval-heading"><strong>Vurdering</strong></p>
+        <p class="feedback-eval-text">${escapeHtml(feedbackBody)}</p>`
       : "";
     resultContent = `
       <div class="feedback-written">
         <p class="feedback-user-heading"><strong>Ditt svar:</strong></p>
         <p class="feedback-user-quote"><em>&quot;${escapeHtml(quote)}&quot;</em></p>
         <div class="feedback-divider" aria-hidden="true"></div>
-        <p class="feedback-verdict">Vurdering og poeng: ${feedbackPart}<strong>${escapeHtml(
-      String(ptsDisplay)
-    )} poeng</strong></p>
+        ${evalSection}
+        <p class="feedback-verdict-points"><strong>Poeng:</strong> ${escapeHtml(
+          String(ptsDisplay)
+        )} poeng</p>
       </div>
     `;
   } else if (
@@ -268,7 +424,11 @@ function render() {
         <button type="button" class="ghost" id="prev-button" ${
           state.currentIndex === 0 ? "disabled" : ""
         }>Forrige</button>
-        <button type="button" class="ghost" id="protest-open-button">Protester</button>
+        ${
+          revisionMode
+            ? ""
+            : '<button type="button" class="ghost" id="protest-open-button">Protester</button>'
+        }
         <button type="button" class="ghost" id="restart-button">Start på nytt</button>
       </div>
     </div>
@@ -276,7 +436,11 @@ function render() {
     <span class="question-number">Spørsmål ${state.currentIndex + 1} av ${
     state.questions.length
   }</span>
-    <h2>${escapeHtml(question.question)}</h2>
+    ${
+      revisionMode
+        ? '<h2 class="revision-heading">Dette spørsmålet revideres.</h2>'
+        : `<h2>${escapeHtml(question.question)}</h2>`
+    }
     ${answerBlock}
     <div id="result" class="${resultClass}">
       ${resultContent}
@@ -284,7 +448,7 @@ function render() {
     <div class="footer">
       <span class="muted">Naviger når du er klar.</span>
       <button type="button" id="next-button" class="primary" ${
-        qs.answered ? "" : "disabled"
+        qs.answered || revisionMode ? "" : "disabled"
       }>
         ${isLast && qs.answered ? "Ferdig" : "Neste"}
       </button>
@@ -314,7 +478,7 @@ function render() {
   const nextButton = document.getElementById("next-button");
   if (nextButton) {
     nextButton.addEventListener("click", () => {
-      if (!qs.answered) {
+      if (!qs.answered && !revisionMode) {
         return;
       }
       if (isLast) {
@@ -335,6 +499,15 @@ function render() {
         return;
       }
       state.currentIndex += 1;
+      while (
+        state.currentIndex < state.questions.length &&
+        getQuestionState(state.questions[state.currentIndex].id).underRevision
+      ) {
+        state.currentIndex += 1;
+      }
+      if (state.currentIndex >= state.questions.length) {
+        state.currentIndex = state.questions.length - 1;
+      }
       render();
     });
   }
@@ -386,6 +559,8 @@ function render() {
       });
     }
   }
+
+  applyWrittenAnswerSubmitVoiceLock();
 }
 
 function getQuestionOverride(question) {
@@ -531,6 +706,9 @@ async function checkQuestionSuitability(question, qs) {
 }
 
 async function submitWritten(question, answer, qs) {
+  if (voiceTranscribingTargetId === "written-answer") {
+    return;
+  }
   const questionId = question.id;
   qs.submittedAnswer = String(answer ?? "").trim();
   try {
@@ -586,7 +764,40 @@ const VOICE_MIN_BYTES = 100;
 let voiceRecorder = null;
 let voiceChunks = [];
 let voiceAutoStopTimer = null;
+let voiceCountdownInterval = null;
 let voiceActiveCtx = null;
+/** id på feltet som får transkribert tekst (f.eks. written-answer); null når ikke aktiv */
+let voiceTranscribingTargetId = null;
+
+function clearVoiceCountdown() {
+  if (voiceCountdownInterval) {
+    clearInterval(voiceCountdownInterval);
+    voiceCountdownInterval = null;
+  }
+}
+
+function applyWrittenAnswerSubmitVoiceLock() {
+  const btn = document.getElementById("written-submit");
+  if (!btn) {
+    return;
+  }
+  btn.disabled = voiceTranscribingTargetId === "written-answer";
+}
+
+function setVoiceButtonAppearance(button, recording) {
+  if (!button) {
+    return;
+  }
+  const inner = button.querySelector(".voice-mic-btn__inner");
+  if (inner) {
+    inner.innerHTML = recording ? VOICE_SVG_STOP : VOICE_SVG_MIC;
+  }
+  button.setAttribute(
+    "aria-label",
+    recording ? "Stopp opptak" : "Start taleopptak"
+  );
+  button.classList.toggle("voice-mic-btn--recording", Boolean(recording));
+}
 
 function setVoiceStatus(el, text, isError) {
   if (!el) {
@@ -594,6 +805,9 @@ function setVoiceStatus(el, text, isError) {
   }
   el.textContent = text || "";
   el.classList.toggle("voice-status--error", Boolean(isError));
+  if (!text) {
+    el.classList.remove("voice-status--recording");
+  }
 }
 
 async function uploadTranscription(blob) {
@@ -659,6 +873,7 @@ async function toggleVoiceRecording(button) {
   }
 
   setVoiceStatus(statusEl, "", false);
+  clearVoiceCountdown();
 
   let stream;
   try {
@@ -686,11 +901,15 @@ async function toggleVoiceRecording(button) {
 
   mr.addEventListener("stop", async () => {
     ctx.stream.getTracks().forEach((t) => t.stop());
+    clearVoiceCountdown();
     if (voiceAutoStopTimer) {
       clearTimeout(voiceAutoStopTimer);
       voiceAutoStopTimer = null;
     }
-    ctx.button.classList.remove("voice-mic-btn--recording");
+    setVoiceButtonAppearance(ctx.button, false);
+    if (ctx.statusEl) {
+      ctx.statusEl.classList.remove("voice-status--recording");
+    }
     voiceRecorder = null;
     voiceActiveCtx = null;
 
@@ -704,8 +923,11 @@ async function toggleVoiceRecording(button) {
       return;
     }
 
-    setVoiceStatus(ctx.statusEl, "Behandler...");
+    setVoiceStatus(ctx.statusEl, "Behandler…");
     ctx.button.disabled = true;
+    voiceTranscribingTargetId = ctx.field.id || null;
+    applyWrittenAnswerSubmitVoiceLock();
+    applyProtestComposerLock();
 
     try {
       const text = await uploadTranscription(blob);
@@ -720,12 +942,34 @@ async function toggleVoiceRecording(button) {
       setVoiceStatus(ctx.statusEl, msg, true);
     } finally {
       ctx.button.disabled = false;
+      voiceTranscribingTargetId = null;
+      applyWrittenAnswerSubmitVoiceLock();
+      applyProtestComposerLock();
     }
   });
 
+  clearVoiceCountdown();
+  const recordStartMs = Date.now();
+  voiceCountdownInterval = setInterval(() => {
+    const left = Math.max(
+      0,
+      Math.ceil((VOICE_MAX_MS - (Date.now() - recordStartMs)) / 1000)
+    );
+    if (ctx.statusEl) {
+      ctx.statusEl.textContent =
+        left > 0 ? `Opptak · ${left} s` : "Stopper…";
+      ctx.statusEl.classList.remove("voice-status--error");
+      ctx.statusEl.classList.add("voice-status--recording");
+    }
+  }, 250);
+
   mr.start(200);
-  ctx.button.classList.add("voice-mic-btn--recording");
-  setVoiceStatus(ctx.statusEl, "Lytter...");
+  setVoiceButtonAppearance(ctx.button, true);
+  if (ctx.statusEl) {
+    ctx.statusEl.classList.remove("voice-status--error");
+    ctx.statusEl.classList.add("voice-status--recording");
+    ctx.statusEl.textContent = "Opptak · 60 s";
+  }
   voiceAutoStopTimer = setTimeout(() => {
     if (voiceRecorder && voiceRecorder.state === "recording") {
       voiceRecorder.stop();
@@ -755,6 +999,159 @@ function protestStatusLabel(status) {
   return "Avvist";
 }
 
+function clearProtestThread() {
+  const thread = document.getElementById("protest-thread");
+  if (thread) {
+    thread.innerHTML = "";
+  }
+}
+
+function appendProtestThread(kind, innerHtml) {
+  const thread = document.getElementById("protest-thread");
+  if (!thread) {
+    return;
+  }
+  const wrap = document.createElement("div");
+  wrap.className = `protest-chat__msg protest-chat__msg--${kind}`;
+  wrap.innerHTML = innerHtml;
+  thread.appendChild(wrap);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function appendProtestThreadPersist(kind, innerHtml) {
+  appendProtestThread(kind, innerHtml);
+  if (protestSession) {
+    protestSession.messages.push({ kind, innerHtml });
+  }
+}
+
+function rebuildProtestThreadFromSession() {
+  clearProtestThread();
+  if (!protestSession?.messages?.length) {
+    return;
+  }
+  for (let i = 0; i < protestSession.messages.length; i += 1) {
+    const seg = protestSession.messages[i];
+    appendProtestThread(seg.kind, seg.innerHtml);
+  }
+}
+
+function popLastProtestUserSegment() {
+  if (!protestSession?.messages?.length) {
+    return;
+  }
+  const last = protestSession.messages[protestSession.messages.length - 1];
+  if (last.kind !== "user") {
+    return;
+  }
+  protestSession.messages.pop();
+  rebuildProtestThreadFromSession();
+}
+
+function addProtestPendingBubble() {
+  const thread = document.getElementById("protest-thread");
+  if (!thread) {
+    return;
+  }
+  const existing = document.getElementById("protest-pending-assistant");
+  if (existing) {
+    existing.remove();
+  }
+  const wrap = document.createElement("div");
+  wrap.id = "protest-pending-assistant";
+  wrap.className =
+    "protest-chat__msg protest-chat__msg--assistant protest-chat__msg--pending";
+  wrap.innerHTML =
+    '<p class="protest-chat__typing"><span class="protest-chat__spinner" aria-hidden="true"></span> Vurderer…</p>';
+  thread.appendChild(wrap);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function removeProtestPendingBubble() {
+  document.getElementById("protest-pending-assistant")?.remove();
+}
+
+function updateProtestPhaseUI() {
+  const session = protestSession;
+  const formPhase = document.getElementById("protest-form-phase");
+  const chatPhase = document.getElementById("protest-chat-phase");
+  const limitMsg = document.getElementById("protest-thread-limit-msg");
+  const isChat = session?.phase === "chat";
+  if (formPhase) {
+    formPhase.classList.toggle("protest-block--hidden", isChat);
+  }
+  if (chatPhase) {
+    chatPhase.classList.toggle("protest-block--hidden", !isChat);
+  }
+  if (limitMsg) {
+    const showLimit =
+      isChat &&
+      session &&
+      session.userMessageCount >= MAX_PROTEST_USER_MESSAGES;
+    limitMsg.classList.toggle("protest-block--hidden", !showLimit);
+  }
+}
+
+function applyProtestComposerLock() {
+  const busy = protestSubmitInFlight;
+  const session = protestSession;
+  const atLimit =
+    session && session.userMessageCount >= MAX_PROTEST_USER_MESSAGES;
+
+  const formBlocked = session?.phase === "form" && busy;
+  const chatBlocked = session?.phase === "chat" && (busy || atLimit);
+
+  const msg = document.getElementById("protest-message");
+  const typeEl = document.getElementById("protest-type");
+  const formMic = document.getElementById("protest-voice-button");
+  const formSubmit = document.getElementById("protest-submit");
+  const follow = document.getElementById("protest-followup-input");
+  const followMic = document.getElementById("protest-followup-voice-button");
+  const chatSend = document.getElementById("protest-chat-send");
+  const endBtn = document.getElementById("protest-end");
+
+  const inFormPhase = session?.phase === "form";
+  const inChatPhase = session?.phase === "chat";
+
+  if (msg) {
+    msg.readOnly = formBlocked || inChatPhase;
+  }
+  if (typeEl) {
+    typeEl.disabled = formBlocked || inChatPhase;
+  }
+  if (formMic) {
+    formMic.disabled = formBlocked || inChatPhase;
+  }
+  if (formSubmit) {
+    const voiceBlocksFormSend =
+      voiceTranscribingTargetId === "protest-message";
+    formSubmit.disabled =
+      formBlocked || inChatPhase || (inFormPhase && voiceBlocksFormSend);
+    if (inFormPhase) {
+      formSubmit.textContent = busy ? "Vurderer…" : "Send";
+    }
+  }
+
+  if (follow) {
+    follow.readOnly = chatBlocked || !inChatPhase;
+  }
+  if (followMic) {
+    followMic.disabled = chatBlocked || !inChatPhase;
+  }
+  if (chatSend) {
+    const voiceBlocksChatSend =
+      voiceTranscribingTargetId === "protest-followup-input";
+    chatSend.disabled =
+      chatBlocked ||
+      !inChatPhase ||
+      (inChatPhase && voiceBlocksChatSend);
+    chatSend.textContent = busy ? "Vurderer…" : "Send";
+  }
+  if (endBtn) {
+    endBtn.disabled = busy || !inChatPhase;
+  }
+}
+
 function setProtestModalVisible(visible) {
   const modal = document.getElementById("protest-modal");
   if (!modal) {
@@ -769,58 +1166,161 @@ function setProtestModalVisible(visible) {
   }
 }
 
-function setProtestOutput(html, variant) {
-  const el = document.getElementById("protest-output");
-  if (!el) {
-    return;
+function syncProtestSessionForQuestion(question) {
+  const qid = String(question.id);
+  const existing = state.protestStateByQuestionId[qid];
+  if (!existing || existing.status !== "active") {
+    state.protestStateByQuestionId[qid] = {
+      status: "active",
+      phase: "form",
+      protestType: null,
+      userMessageCount: 0,
+      messages: [],
+    };
   }
-  el.className =
-    "protest-output" + (variant ? ` protest-output--${variant}` : "");
-  el.innerHTML = html;
+  protestSession = /** @type {ProtestStateActive} */ (
+    state.protestStateByQuestionId[qid]
+  );
 }
 
 function openProtestModal(question) {
+  document.getElementById("protest-revision-view")?.classList.add("protest-block--hidden");
+
   protestTargetQuestion = question;
-  const msg = document.getElementById("protest-message");
+  protestSubmitInFlight = false;
+
+  const qid = String(question.id);
+  const finalizedView = document.getElementById("protest-finalized-view");
+  const activeView = document.getElementById("protest-active-view");
+
+  if (state.protestStateByQuestionId[qid]?.status === "finalized") {
+    const pq = getQuestionState(question.id);
+    const finText = document.getElementById("protest-finalized-text");
+    if (finText) {
+      finText.textContent = pq.underRevision
+        ? "Protesten er registrert. Spørsmålet tas ut av denne økten og sendes til revisjon."
+        : "Protest for dette spørsmålet er avsluttet. Du kan ikke sende ny protest her.";
+    }
+    if (finalizedView) {
+      finalizedView.classList.remove("protest-block--hidden");
+    }
+    if (activeView) {
+      activeView.classList.add("protest-block--hidden");
+    }
+    protestSession = null;
+    setProtestModalVisible(true);
+    applyProtestComposerLock();
+    return;
+  }
+
+  if (finalizedView) {
+    finalizedView.classList.add("protest-block--hidden");
+  }
+  if (activeView) {
+    activeView.classList.remove("protest-block--hidden");
+  }
+
+  syncProtestSessionForQuestion(question);
+
+  const fresh =
+    protestSession.phase === "form" &&
+    protestSession.userMessageCount === 0 &&
+    protestSession.messages.length === 0;
+
+  rebuildProtestThreadFromSession();
+
+  const msgEl = document.getElementById("protest-message");
   const typeEl = document.getElementById("protest-type");
-  const submitBtn = document.getElementById("protest-submit");
-  if (msg) {
-    msg.value = "";
+  const followEl = document.getElementById("protest-followup-input");
+  if (fresh) {
+    if (msgEl) {
+      msgEl.value = "";
+    }
+    if (typeEl) {
+      typeEl.selectedIndex = 0;
+    }
   }
-  if (typeEl) {
-    typeEl.selectedIndex = 0;
+  if (followEl) {
+    followEl.value = "";
   }
-  if (submitBtn) {
-    submitBtn.disabled = false;
-    submitBtn.textContent = "Send inn";
+
+  const formSubmit = document.getElementById("protest-submit");
+  const chatSend = document.getElementById("protest-chat-send");
+  if (formSubmit) {
+    formSubmit.textContent = "Send";
   }
-  setProtestOutput("", "");
+  if (chatSend) {
+    chatSend.textContent = "Send";
+  }
+
+  updateProtestPhaseUI();
+  applyProtestComposerLock();
   setProtestModalVisible(true);
-  if (msg) {
-    msg.focus();
+
+  if (protestSession.phase === "form") {
+    msgEl?.focus();
+  } else {
+    followEl?.focus();
   }
 }
 
 function closeProtestModal() {
   protestTargetQuestion = null;
-  const submitBtn = document.getElementById("protest-submit");
-  if (submitBtn) {
-    submitBtn.disabled = false;
-    submitBtn.textContent = "Send inn";
+  protestSubmitInFlight = false;
+  protestSession = null;
+  const formSubmit = document.getElementById("protest-submit");
+  const chatSend = document.getElementById("protest-chat-send");
+  if (formSubmit) {
+    formSubmit.textContent = "Send";
   }
+  if (chatSend) {
+    chatSend.textContent = "Send";
+  }
+  document.getElementById("protest-finalized-view")?.classList.add("protest-block--hidden");
+  document.getElementById("protest-revision-view")?.classList.add("protest-block--hidden");
   setProtestModalVisible(false);
 }
 
-async function submitProtest() {
-  const submitBtn = document.getElementById("protest-submit");
-  const typeEl = document.getElementById("protest-type");
-  const msgEl = document.getElementById("protest-message");
-
+function finalizeProtestSession() {
   if (!protestTargetQuestion) {
-    setProtestOutput(
-      "<p>Kunne ikke knytte protesten til et spørsmål. Lukk og prøv igjen.</p>",
-      "error"
-    );
+    closeProtestModal();
+    return;
+  }
+  const qid = String(protestTargetQuestion.id);
+  state.protestStateByQuestionId[qid] = { status: "finalized" };
+  closeProtestModal();
+}
+
+async function sendProtestRequest(userMessage, protestType) {
+  const options = Array.isArray(protestTargetQuestion.options)
+    ? protestTargetQuestion.options
+    : [];
+  const response = await fetch(`${API_BASE}/api/quiz/protest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      questionId: protestTargetQuestion.id,
+      theme: state.theme,
+      question: protestTargetQuestion.question,
+      options,
+      protestType,
+      userMessage,
+    }),
+  });
+  let data = {};
+  try {
+    data = await response.json();
+  } catch {
+    data = { error: "Ugyldig JSON fra serveren." };
+  }
+  return { response, data };
+}
+
+async function submitProtestForm() {
+  const msgEl = document.getElementById("protest-message");
+  const typeEl = document.getElementById("protest-type");
+
+  if (!protestTargetQuestion || !protestSession) {
     return;
   }
 
@@ -828,98 +1328,297 @@ async function submitProtest() {
     ? protestTargetQuestion.options
     : [];
   if (options.length < 2) {
-    setProtestOutput(
-      "<p>Dette spørsmålet mangler alternativer som kreves for protest.</p>",
-      "error"
+    appendProtestThread(
+      "system",
+      `<p>${escapeHtml(
+        "Dette spørsmålet mangler alternativer som kreves for protest."
+      )}</p>`
     );
     return;
   }
 
   const userMessage = (msgEl?.value ?? "").trim();
   if (!userMessage) {
-    setProtestOutput("<p>Skriv en kort begrunnelse.</p>", "error");
+    appendProtestThread(
+      "system",
+      `<p>${escapeHtml("Skriv en kort begrunnelse.")}</p>`
+    );
     return;
   }
 
   const protestType = (typeEl?.value ?? "").trim();
   if (!protestType) {
-    setProtestOutput("<p>Velg protesttype.</p>", "error");
-    return;
-  }
-
-  if (submitBtn) {
-    submitBtn.disabled = true;
-    submitBtn.textContent = "Vurderer…";
-  }
-  setProtestOutput("<p>Vurderer protesten…</p>", "loading");
-
-  let response;
-  let data = {};
-  try {
-    response = await fetch(`${API_BASE}/api/quiz/protest`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        questionId: protestTargetQuestion.id,
-        theme: state.theme,
-        question: protestTargetQuestion.question,
-        options,
-        protestType,
-        userMessage,
-      }),
-    });
-    try {
-      data = await response.json();
-    } catch {
-      data = { error: "Ugyldig JSON fra serveren." };
-    }
-  } catch {
-    setProtestOutput(
-      "<p>Nettverksfeil. Sjekk tilkoblingen og prøv igjen.</p>",
-      "error"
+    appendProtestThread(
+      "system",
+      `<p>${escapeHtml("Velg protesttype.")}</p>`
     );
-    if (submitBtn) {
-      submitBtn.disabled = false;
-      submitBtn.textContent = "Send inn";
-    }
     return;
   }
 
-  if (!response.ok) {
+  protestSubmitInFlight = true;
+  applyProtestComposerLock();
+
+  const userHtml =
+    `<div class="protest-chat__meta">${escapeHtml(protestType)}</div>` +
+    `<div class="protest-chat__body">${escapeHtml(userMessage)}</div>`;
+  appendProtestThreadPersist("user", userHtml);
+
+  if (msgEl) {
+    msgEl.value = "";
+  }
+
+  addProtestPendingBubble();
+
+  let res;
+  try {
+    res = await sendProtestRequest(userMessage, protestType);
+  } catch {
+    removeProtestPendingBubble();
+    popLastProtestUserSegment();
+    appendProtestThread(
+      "system",
+      `<p>${escapeHtml(
+        "Nettverksfeil. Sjekk tilkoblingen og prøv igjen."
+      )}</p>`
+    );
+    if (msgEl) {
+      msgEl.value = userMessage;
+    }
+    protestSubmitInFlight = false;
+    applyProtestComposerLock();
+    return;
+  }
+
+  removeProtestPendingBubble();
+
+  if (!res.response.ok) {
     const errText =
-      typeof data.error === "string" && data.error.trim()
-        ? data.error
+      typeof res.data.error === "string" && res.data.error.trim()
+        ? res.data.error
         : "Forespørselen feilet.";
-    setProtestOutput(`<p>${escapeHtml(errText)}</p>`, "error");
-    if (submitBtn) {
-      submitBtn.disabled = false;
-      submitBtn.textContent = "Send inn";
+    popLastProtestUserSegment();
+    appendProtestThread(
+      "system",
+      `<p>${escapeHtml(errText)}</p>`
+    );
+    if (msgEl) {
+      msgEl.value = userMessage;
     }
+    protestSubmitInFlight = false;
+    applyProtestComposerLock();
     return;
   }
 
-  const status = typeof data.status === "string" ? data.status : "rejected";
-  const points = Number(data.points);
+  const status =
+    typeof res.data.status === "string" ? res.data.status : "rejected";
+  const points = Number(res.data.points);
   const ptsDisplay = Number.isFinite(points) ? points : 0;
   const feedback =
-    typeof data.feedback === "string" ? data.feedback : "Ingen forklaring.";
+    typeof res.data.feedback === "string"
+      ? res.data.feedback
+      : "Ingen forklaring.";
 
   state.totalScore += ptsDisplay;
+
+  if (protestRemovesQuestionFromSession(status)) {
+    applyProtestRevisionSuccess(protestTargetQuestion.id);
+    protestSubmitInFlight = false;
+    render();
+    showProtestRevisionOutcomeInModal(ptsDisplay);
+    applyProtestComposerLock();
+    return;
+  }
+
   render();
 
-  setProtestOutput(
+  const assistantHtml =
+    `<div class="protest-chat__meta">Vurdering</div>` +
+    `<div class="protest-chat__body">` +
     `<p><strong>Status:</strong> ${escapeHtml(
       protestStatusLabel(status)
     )}</p>` +
-      `<p><strong>Poeng:</strong> ${escapeHtml(String(ptsDisplay))}</p>` +
-      `<p><strong>Forklaring:</strong> ${escapeHtml(feedback)}</p>`,
-    "ok"
+    `<p><strong>Poeng:</strong> ${escapeHtml(String(ptsDisplay))}</p>` +
+    `<p><strong>Forklaring:</strong> ${escapeHtml(feedback)}</p>` +
+    `</div>`;
+  appendProtestThreadPersist("assistant", assistantHtml);
+
+  protestSession.protestType = protestType;
+  protestSession.phase = "chat";
+  protestSession.userMessageCount = 1;
+
+  protestSubmitInFlight = false;
+  updateProtestPhaseUI();
+  applyProtestComposerLock();
+  document.getElementById("protest-followup-input")?.focus();
+}
+
+async function submitProtestFollowup() {
+  const followEl = document.getElementById("protest-followup-input");
+
+  if (!protestTargetQuestion || !protestSession) {
+    return;
+  }
+
+  if (protestSession.userMessageCount >= MAX_PROTEST_USER_MESSAGES) {
+    return;
+  }
+
+  const options = Array.isArray(protestTargetQuestion.options)
+    ? protestTargetQuestion.options
+    : [];
+  if (options.length < 2) {
+    return;
+  }
+
+  const protestType = protestSession.protestType;
+  if (!protestType) {
+    appendProtestThread(
+      "system",
+      `<p>${escapeHtml("Mangler protesttype. Start på nytt.")}</p>`
+    );
+    return;
+  }
+
+  const userMessage = (followEl?.value ?? "").trim();
+  if (!userMessage) {
+    appendProtestThread(
+      "system",
+      `<p>${escapeHtml("Skriv en melding.")}</p>`
+    );
+    return;
+  }
+
+  protestSubmitInFlight = true;
+  applyProtestComposerLock();
+
+  appendProtestThreadPersist(
+    "user",
+    `<div class="protest-chat__body">${escapeHtml(userMessage)}</div>`
   );
 
-  if (submitBtn) {
-    submitBtn.disabled = false;
-    submitBtn.textContent = "Send inn";
+  if (followEl) {
+    followEl.value = "";
   }
+
+  addProtestPendingBubble();
+
+  let res;
+  try {
+    res = await sendProtestRequest(userMessage, protestType);
+  } catch {
+    removeProtestPendingBubble();
+    popLastProtestUserSegment();
+    appendProtestThread(
+      "system",
+      `<p>${escapeHtml(
+        "Nettverksfeil. Sjekk tilkoblingen og prøv igjen."
+      )}</p>`
+    );
+    if (followEl) {
+      followEl.value = userMessage;
+    }
+    protestSubmitInFlight = false;
+    applyProtestComposerLock();
+    return;
+  }
+
+  removeProtestPendingBubble();
+
+  if (!res.response.ok) {
+    const errText =
+      typeof res.data.error === "string" && res.data.error.trim()
+        ? res.data.error
+        : "Forespørselen feilet.";
+    popLastProtestUserSegment();
+    appendProtestThread(
+      "system",
+      `<p>${escapeHtml(errText)}</p>`
+    );
+    if (followEl) {
+      followEl.value = userMessage;
+    }
+    protestSubmitInFlight = false;
+    applyProtestComposerLock();
+    return;
+  }
+
+  const status =
+    typeof res.data.status === "string" ? res.data.status : "rejected";
+  const points = Number(res.data.points);
+  const ptsDisplay = Number.isFinite(points) ? points : 0;
+  const feedback =
+    typeof res.data.feedback === "string"
+      ? res.data.feedback
+      : "Ingen forklaring.";
+
+  state.totalScore += ptsDisplay;
+
+  if (protestRemovesQuestionFromSession(status)) {
+    applyProtestRevisionSuccess(protestTargetQuestion.id);
+    protestSubmitInFlight = false;
+    render();
+    showProtestRevisionOutcomeInModal(ptsDisplay);
+    applyProtestComposerLock();
+    return;
+  }
+
+  render();
+
+  appendProtestThreadPersist(
+    "assistant",
+    `<div class="protest-chat__meta">Vurdering</div>` +
+      `<div class="protest-chat__body">` +
+      `<p><strong>Status:</strong> ${escapeHtml(
+        protestStatusLabel(status)
+      )}</p>` +
+      `<p><strong>Poeng:</strong> ${escapeHtml(String(ptsDisplay))}</p>` +
+      `<p><strong>Forklaring:</strong> ${escapeHtml(feedback)}</p>` +
+      `</div>`
+  );
+
+  protestSession.userMessageCount += 1;
+
+  protestSubmitInFlight = false;
+  updateProtestPhaseUI();
+  applyProtestComposerLock();
+  if (protestSession.userMessageCount < MAX_PROTEST_USER_MESSAGES) {
+    followEl?.focus();
+  }
+}
+
+async function submitProtest() {
+  if (protestSubmitInFlight) {
+    return;
+  }
+
+  if (
+    protestSession?.phase === "form" &&
+    voiceTranscribingTargetId === "protest-message"
+  ) {
+    return;
+  }
+  if (
+    protestSession?.phase === "chat" &&
+    voiceTranscribingTargetId === "protest-followup-input"
+  ) {
+    return;
+  }
+
+  if (!protestTargetQuestion || !protestSession) {
+    appendProtestThread(
+      "system",
+      `<p>${escapeHtml(
+        "Kunne ikke knytte protesten til et spørsmål. Lukk og prøv igjen."
+      )}</p>`
+    );
+    return;
+  }
+
+  if (protestSession.phase === "chat") {
+    await submitProtestFollowup();
+    return;
+  }
+  await submitProtestForm();
 }
 
 function initProtestModal() {
@@ -934,7 +1633,39 @@ function initProtestModal() {
   const submitBtn = document.getElementById("protest-submit");
   if (submitBtn) {
     submitBtn.addEventListener("click", () => {
-      submitProtest();
+      void submitProtest();
+    });
+  }
+  const chatSend = document.getElementById("protest-chat-send");
+  if (chatSend) {
+    chatSend.addEventListener("click", () => {
+      void submitProtest();
+    });
+  }
+  const endBtn = document.getElementById("protest-end");
+  if (endBtn) {
+    endBtn.addEventListener("click", () => finalizeProtestSession());
+  }
+  const finalizedOk = document.getElementById("protest-finalized-ok");
+  if (finalizedOk) {
+    finalizedOk.addEventListener("click", () => closeProtestModal());
+  }
+
+  const revisionNext = document.getElementById("protest-revision-next");
+  if (revisionNext) {
+    revisionNext.addEventListener("click", () => {
+      closeProtestModal();
+      advanceToNextPlayableQuestion();
+    });
+  }
+
+  const followInput = document.getElementById("protest-followup-input");
+  if (followInput) {
+    followInput.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !ev.shiftKey) {
+        ev.preventDefault();
+        void submitProtest();
+      }
     });
   }
 }
