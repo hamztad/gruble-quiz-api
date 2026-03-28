@@ -215,20 +215,25 @@ HÅNDTERING AV VAGE TEMA
 Hvis temaet er uklart, smalt eller tvetydig (for eksempel et fornavn eller et enkelt ord uten tydelig kategori):
 
 - Ikke dikt opp informasjon
-- Ikke lag spørsmål basert på antakelser
+- Ikke lag spørsmål om spesifikke personer, hendelser, serier eller kampanjer
+- Ikke anta at temaet refererer til noe bestemt
 
-Du må enten:
+Du kan kun bruke:
 
-1. Tolke temaet til en tydelig, faktabasert og stabil kategori
-   Eksempel:
-   - Et fornavn → stabil og generell fakta om navnet (for eksempel opprinnelse, språk eller bruk)
-   - Kun bruk konkrete personer hvis de er tydelig relevante og allment kjente
-   - Et tvetydig ord → en kjent og dokumenterbar betydning
+1. Generell, etablert og verifiserbar kunnskap
+   Eksempler:
+   - språklig opprinnelse
+   - betydning av navn eller ord
+   - definisjoner
+   - generelle fakta som ikke er knyttet til enkeltpersoner
 
-ELLER
+2. Klart etablerte og universelt kjente referanser
+   (kun hvis de er åpenbare og entydige)
 
-2. Forkaste temaet og lage spørsmål på en mer generell, trygg måte innenfor temaets mest åpenbare betydning
+Hvis dette ikke er mulig:
+→ forkast temaet og lag spørsmål innen en trygg, generell tolkning
 
-Uansett:
-- Spørsmålene må fortsatt være entydige og dokumenterbare
-- Ikke bruk kreativ tolkning som kan føre til usikre eller udokumenterbare svar
+VIKTIG:
+- Ikke lag spørsmål om konkrete personer med et gitt fornavn
+- Ikke lag spørsmål om ukjente eller usikre hendelser
+- Hvis du er i tvil om noe eksisterer → ikke bruk det
