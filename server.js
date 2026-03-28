@@ -949,6 +949,7 @@ Temaet skal her forstås som et skolefag eller undervisningsemne. Hvis temaet er
 
 Spørsmålene må være selvstendige.
 Brukeren skal kunne forstå og besvare hvert spørsmål uten artikkel, ingress, tekstutdrag eller annen skjult kontekst.
+Språket skal være korrekt, naturlig norsk (grammatikk og bøyning); les hvert spørsmål som en norsklærer før du godkjenner det.
 Ikke inkluder felt som "text", "context", "passage" eller lignende.
 
 Hvert element i "questions" skal ha:
@@ -1613,6 +1614,41 @@ function getOpenEndedQuestionValidationError(questionText) {
 }
 
 /**
+ * Enkle heuristikk-regler for åpenbar uoverensstemmelse mellom den/det og bestemt form (-en / -et).
+ * Bevisst snever: bare mønstre med høy treffrate på faktiske feil (f.eks. «den største havdyren»).
+ */
+function getNorwegianGrammarHeuristicError(questionText) {
+  const text = String(questionText ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) {
+    return null;
+  }
+
+  const t = text;
+  const sup =
+    "(?:største|minste|beste|høyeste|lengste|nyeste|eldste|verste|laveste|første|siste)";
+
+  if (/\bden største havdyren\b/i.test(t)) {
+    return "grammar: neuter «havdyr» → use det største havdyret (not den … havdyren)";
+  }
+
+  if (new RegExp(`\\bden ${sup} [a-zæøå]+et\\b`, "i").test(t)) {
+    return "grammar: suspected den with neuter definite (-et); use det … where the noun is intetkjønn";
+  }
+
+  if (new RegExp(`\\bdet ${sup} [a-zæøå]+en\\b`, "i").test(t)) {
+    return "grammar: suspected det with common-gender definite (-en); use den … where the noun is hankjønn/hunkjønn/felleskjønn";
+  }
+
+  if (new RegExp(`\\bden ${sup} \\w*dyren\\b`, "i").test(t)) {
+    return "grammar: suspected wrong form *dyren with den; intetkjønn dyre/dyr → det … dyret";
+  }
+
+  return null;
+}
+
+/**
  * Nytt: defensiv sperre mot tydelig vage eller subjektive formuleringer.
  * Bevisst enkel: stopper bare noen klassiske uttrykk som ofte gjør spørsmålet
  * faglig uklart eller vanskelig å dokumentere presist.
@@ -1865,6 +1901,10 @@ function validateGeneratedQuiz(
     const openEndedError = getOpenEndedQuestionValidationError(q.question);
     if (openEndedError) {
       return `question ${i} ${openEndedError}`;
+    }
+    const grammarHeuristicError = getNorwegianGrammarHeuristicError(q.question);
+    if (grammarHeuristicError) {
+      return `question ${i} ${grammarHeuristicError}`;
     }
     const vagueQuestionError = getVagueQuestionValidationError(q.question);
     if (vagueQuestionError) {
