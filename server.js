@@ -9,6 +9,7 @@ const { Pool } = require("pg");
 const OpenAI = require("openai");
 const {
   attachDecorativeQuizImages,
+  pickSharedDecorativeImage,
   normalizeQuizQuestionsFromDb,
   serializeQuizForStorage,
 } = require("./quizImages");
@@ -102,6 +103,9 @@ function applyQuizDifficultyToPoints(points, difficulty) {
 const THEME_INPUT_MAX_CHARS = 50;
 const THEME_INPUT_MAX_WORDS = 3;
 
+/** Lagres som `variant` i questions JSONB; skiller bilde-10-quiz fra standard flyt. */
+const VISUAL_TEN_QUIZ_VARIANT = "visual-10";
+
 /**
  * Nytt: avvis for langt tema før OpenAI-kall (testgenerering).
  * @returns {string|null} feilmelding på norsk, eller null hvis OK
@@ -150,6 +154,7 @@ function validateThemeForQuizInput(theme) {
 
 app.use(express.json());
 app.use(cors());
+app.use("/frontend", express.static(path.join(__dirname, "frontend")));
 
 const transcribeUpload = multer({
   storage: multer.memoryStorage(),
@@ -269,7 +274,7 @@ function getQuizQuestionsPayloadFromRow(quizRow) {
         : JSON.parse(JSON.stringify(quizRow.questions));
     return normalizeQuizQuestionsFromDb(raw);
   } catch {
-    return { sharedImage: null, questions: [] };
+    return { sharedImage: null, questions: [], variant: null };
   }
 }
 
@@ -279,6 +284,10 @@ app.get("/", (_req, res) => {
 
 app.get("/prototype", (_req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
+});
+
+app.get("/prototype/visual-quiz", (_req, res) => {
+  res.sendFile(path.join(__dirname, "frontend", "visual-quiz.html"));
 });
 
 async function evaluateWrittenAnswerWithOpenAI(
@@ -420,19 +429,40 @@ async function fetchAnswerForProtestFromDb(questionId) {
   });
 
   try {
-    const result = await pool.query(
-      "SELECT * FROM quizzes ORDER BY created_at DESC LIMIT 1"
+    const findAnswer = (quiz) => {
+      const { questions } = getQuizQuestionsPayloadFromRow(quiz);
+      const q = questions.find((item) => Number(item.id) === Number(questionId));
+      if (!q || q.answer === undefined || q.answer === null) {
+        return "";
+      }
+      return String(q.answer).trim();
+    };
+
+    const standard = await pool.query(
+      `SELECT * FROM quizzes
+       WHERE (questions::jsonb->>'variant' IS DISTINCT FROM $1)
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [VISUAL_TEN_QUIZ_VARIANT]
     );
-    if (result.rows.length === 0) {
-      return "";
+    if (standard.rows.length > 0) {
+      const a = findAnswer(standard.rows[0]);
+      if (a) {
+        return a;
+      }
     }
-    const quiz = result.rows[0];
-    const { questions } = getQuizQuestionsPayloadFromRow(quiz);
-    const q = questions.find((item) => Number(item.id) === Number(questionId));
-    if (!q || q.answer === undefined || q.answer === null) {
-      return "";
+
+    const visual = await pool.query(
+      `SELECT * FROM quizzes
+       WHERE questions::jsonb->>'variant' = $1
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [VISUAL_TEN_QUIZ_VARIANT]
+    );
+    if (visual.rows.length > 0) {
+      return findAnswer(visual.rows[0]);
     }
-    return String(q.answer).trim();
+    return "";
   } catch {
     return "";
   } finally {
@@ -1417,6 +1447,186 @@ async function generateQuizWithOpenAI(
   );
 }
 
+/**
+ * Ett siste spørsmål knyttet til delt bilde (visual-10-variant). Samme validering som øvrige spørsmål.
+ */
+async function generateVisualClimaxQuestion(
+  openai,
+  model,
+  theme,
+  sharedImage,
+  lookup,
+  subjectMode,
+  diffNorm
+) {
+  const themeStr = String(theme ?? "").trim();
+  const themeJson = JSON.stringify(themeStr);
+  const title = String(sharedImage?.title ?? "").trim();
+  const credit = String(sharedImage?.credit ?? "").trim();
+  const url = String(sharedImage?.url ?? "").trim();
+
+  const userPrompt = `Du genererer siste spørsmål (nr. 10) i en bildebåren quiz om temaet ${themeJson}.
+
+Spørsmål 1–9 i quizen handler om temaet generelt. Dette spørsmålet skal være tydelig knyttet til motivet i quizens felles illustrasjonsbilde, med trygg og dokumenterbar kunnskap (f.eks. kjent sted, byggverk, person, naturtype eller gjenstand som rimelig kan knyttes til bildet ut fra tittel og alminnelig kunnskap). Ikke finn på detaljer du ikke kan forsvare; ikke spør om pikselnivå du ikke kan slå fast.
+
+Bildemetadata fra kilde:
+- tittel: ${JSON.stringify(title)}
+- kreditering: ${JSON.stringify(credit)}
+- bilde-URL (referanse for deg; ikke gjengi hele URL i spørsmålsteksten): ${JSON.stringify(url)}
+
+Generer nøyaktig 1 flervalgsoppgave på norsk i samme JSON-format som vanlige quizer i dette systemet.
+
+Krav:
+- Feltet "theme" skal være eksakt: ${themeJson}
+- "questions" skal ha nøyaktig 1 element med id, question, options (fire strenger), answer
+- Ett entydig riktig svar; samme kvalitetskrav som for øvrige spørsmål.
+
+Returner KUN JSON med "theme" og "questions".`;
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const parsed = await parseJsonChatCompletion(
+      openai.chat.completions.create({
+        model,
+        messages: [
+          {
+            role: "system",
+            content: buildGenerateQuizSystemContent(diffNorm),
+          },
+          { role: "user", content: userPrompt },
+        ],
+        response_format: { type: "json_object" },
+      })
+    );
+    const err = validateGeneratedQuiz(
+      parsed,
+      themeStr,
+      1,
+      1,
+      lookup,
+      subjectMode,
+      diffNorm
+    );
+    if (err) {
+      console.log(
+        `[visual-10 climax] attempt=${attempt + 1} validation=${JSON.stringify(err)}`
+      );
+      continue;
+    }
+    const q = parsed.questions?.[0];
+    if (!q || typeof q.question !== "string" || !Array.isArray(q.options)) {
+      continue;
+    }
+    return shuffleQuestionOptions({
+      ...q,
+      id: 10,
+      imageQuestion: true,
+    });
+  }
+  throw new Error("Could not generate valid visual climax question");
+}
+
+/**
+ * Bilde-10-variant: 9 spørsmål fra grunnmotor + delt bilde + ett bildeklimaks-spørsmål.
+ * Grunnmotoren (generateQuizWithOpenAI) endres ikke; dette er en tynn wrapper.
+ */
+async function generateVisualTenQuizWithOpenAI(
+  openai,
+  model,
+  theme,
+  memoryOptions = null,
+  subjectMode = false,
+  difficulty = "easy"
+) {
+  const diffNorm = normalizeQuizDifficulty(difficulty);
+  const ninePack = await generateQuizWithOpenAI(
+    openai,
+    model,
+    theme,
+    9,
+    memoryOptions,
+    subjectMode,
+    difficulty
+  );
+
+  const lookup = subjectMode
+    ? getEmptyThemeLookupSupport()
+    : await maybeBuildThemeLookupSupport(theme);
+
+  const nineClean = ninePack.questions.map((q) => {
+    const { image, ...rest } = q;
+    return rest;
+  });
+  const contextText = nineClean
+    .map((q) => String(q?.question ?? "").trim())
+    .filter(Boolean)
+    .join(" ");
+
+  let shared = ninePack.sharedImage;
+  if (!shared) {
+    shared = await pickSharedDecorativeImage(theme, lookup, contextText);
+  }
+  if (!shared) {
+    const decorated = await attachDecorativeQuizImages(
+      theme,
+      lookup,
+      nineClean
+    );
+    shared = decorated.sharedImage;
+    nineClean = decorated.questions.map((row, i) => {
+      const base = nineClean[i] || {};
+      const { image, ...rest } = row;
+      return { ...base, ...rest };
+    });
+  }
+  if (!shared || typeof shared.url !== "string" || !shared.url.trim()) {
+    throw new Error(
+      "Could not resolve a shared image for visual-10 quiz (try another theme)"
+    );
+  }
+
+  const q10 = await generateVisualClimaxQuestion(
+    openai,
+    model,
+    theme,
+    shared,
+    lookup,
+    subjectMode,
+    diffNorm
+  );
+
+  const nineRenumbered = nineClean.map((q, idx) => ({
+    ...q,
+    id: idx + 1,
+  }));
+  const allQuestions = [...nineRenumbered, q10];
+
+  const fullPayload = {
+    theme: String(ninePack.theme ?? theme).trim(),
+    questions: allQuestions,
+  };
+  const finalErr = validateGeneratedQuiz(
+    fullPayload,
+    String(theme).trim(),
+    10,
+    10,
+    lookup,
+    subjectMode,
+    diffNorm
+  );
+  if (finalErr) {
+    throw new Error(
+      `visual-10 full quiz validation failed: ${JSON.stringify(finalErr)}`
+    );
+  }
+
+  return {
+    theme: fullPayload.theme,
+    questions: allQuestions,
+    sharedImage: shared,
+    variant: VISUAL_TEN_QUIZ_VARIANT,
+  };
+}
+
 app.get("/api/quiz/today", async (_req, res) => {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -1434,7 +1644,11 @@ app.get("/api/quiz/today", async (_req, res) => {
 
   try {
     const result = await pool.query(
-      "SELECT * FROM quizzes ORDER BY created_at DESC LIMIT 1"
+      `SELECT * FROM quizzes
+       WHERE (questions::jsonb->>'variant' IS DISTINCT FROM $1)
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [VISUAL_TEN_QUIZ_VARIANT]
     );
 
     if (result.rows.length === 0) {
@@ -1443,13 +1657,62 @@ app.get("/api/quiz/today", async (_req, res) => {
     }
 
     const quiz = result.rows[0];
-    const { sharedImage, questions } = getQuizQuestionsPayloadFromRow(quiz);
+    const { sharedImage, questions, variant } = getQuizQuestionsPayloadFromRow(quiz);
 
     const questionsForClient = questions.map((q) => stripQuestionForPublicClient(q));
 
     res.status(200).json({
       theme: quiz.theme,
       difficulty: normalizeQuizDifficulty(quiz.difficulty),
+      variant: variant || "standard",
+      sharedImage: sharedImage || null,
+      questions: questionsForClient,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await pool.end().catch(() => {});
+  }
+});
+
+app.get("/api/quiz/visual-today", async (_req, res) => {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    res.status(500).json({ error: "DATABASE_URL is not set" });
+    return;
+  }
+
+  const pool = new Pool({
+    connectionString: databaseUrl,
+    ssl:
+      process.env.NODE_ENV === "production"
+        ? { rejectUnauthorized: false }
+        : undefined,
+  });
+
+  try {
+    const result = await pool.query(
+      `SELECT * FROM quizzes
+       WHERE questions::jsonb->>'variant' = $1
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [VISUAL_TEN_QUIZ_VARIANT]
+    );
+
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: "No visual-10 quiz found" });
+      return;
+    }
+
+    const quiz = result.rows[0];
+    const { sharedImage, questions, variant } = getQuizQuestionsPayloadFromRow(quiz);
+
+    const questionsForClient = questions.map((q) => stripQuestionForPublicClient(q));
+
+    res.status(200).json({
+      theme: quiz.theme,
+      difficulty: normalizeQuizDifficulty(quiz.difficulty),
+      variant: variant || VISUAL_TEN_QUIZ_VARIANT,
       sharedImage: sharedImage || null,
       questions: questionsForClient,
     });
@@ -1468,6 +1731,8 @@ app.post("/api/quiz/answer", async (req, res) => {
   }
 
   const { questionId, answer, mode, attemptNumber, questionOverride } = req.body ?? {};
+  const quizVariantRaw =
+    typeof req.body?.quizVariant === "string" ? req.body.quizVariant.trim() : "";
   if (questionId === undefined || questionId === null || answer === undefined) {
     res.status(400).json({ error: "Missing questionId or answer" });
     return;
@@ -1482,9 +1747,22 @@ app.post("/api/quiz/answer", async (req, res) => {
   });
 
   try {
-    const result = await pool.query(
-      "SELECT * FROM quizzes ORDER BY created_at DESC LIMIT 1"
-    );
+    const result =
+      quizVariantRaw === VISUAL_TEN_QUIZ_VARIANT
+        ? await pool.query(
+            `SELECT * FROM quizzes
+             WHERE questions::jsonb->>'variant' = $1
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [VISUAL_TEN_QUIZ_VARIANT]
+          )
+        : await pool.query(
+            `SELECT * FROM quizzes
+             WHERE (questions::jsonb->>'variant' IS DISTINCT FROM $1)
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [VISUAL_TEN_QUIZ_VARIANT]
+          );
 
     if (result.rows.length === 0) {
       res.status(200).json({ correct: false, points: 0 });
@@ -2317,6 +2595,126 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
   }
 });
 
+/**
+ * Bilde-10-variant: egen lagringsrad og JSON-variant; grunnmotor brukes via generateVisualTenQuizWithOpenAI.
+ */
+app.post("/api/internal/generate-visual-10-quiz", async (req, res) => {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    res.status(500).json({ error: "OPENAI_API_KEY is not set" });
+    return;
+  }
+
+  const theme =
+    typeof req.body?.theme === "string" ? req.body.theme.trim() : "";
+  if (!theme) {
+    res.status(400).json({ error: "Missing or empty theme" });
+    return;
+  }
+
+  const themeInputError = validateThemeForQuizInput(theme);
+  if (themeInputError) {
+    res.status(400).json({ error: themeInputError });
+    return;
+  }
+
+  const openai = new OpenAI({ apiKey });
+  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+
+  const quizSourceRaw =
+    typeof req.body?.quizSource === "string"
+      ? req.body.quizSource.trim().toLowerCase()
+      : typeof req.body?.source === "string"
+        ? req.body.source.trim().toLowerCase()
+        : "";
+  const memoryMode =
+    quizSourceRaw === QUIZ_MEMORY_MODE.DAILY
+      ? QUIZ_MEMORY_MODE.DAILY
+      : QUIZ_MEMORY_MODE.CUSTOM;
+
+  const subjectMode = req.body?.subjectMode === true;
+  const difficulty = normalizeQuizDifficulty(req.body?.difficulty);
+
+  try {
+    const databaseUrl = process.env.DATABASE_URL;
+    if (!databaseUrl) {
+      res.status(500).json({ error: "DATABASE_URL is not set" });
+      return;
+    }
+
+    const pool = new Pool({
+      connectionString: databaseUrl,
+      ssl:
+        process.env.NODE_ENV === "production"
+          ? { rejectUnauthorized: false }
+          : undefined,
+    });
+
+    let parsed;
+    try {
+      parsed = await generateVisualTenQuizWithOpenAI(
+        openai,
+        model,
+        theme,
+        {
+          pool,
+          mode: memoryMode,
+        },
+        subjectMode,
+        difficulty
+      );
+    } catch (genErr) {
+      await pool.end().catch(() => {});
+      throw genErr;
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "INSERT INTO quizzes (theme, questions, difficulty) VALUES ($1, $2::jsonb, $3)",
+        [
+          parsed.theme.trim(),
+          serializeQuizForStorage(
+            parsed.sharedImage ?? null,
+            parsed.questions,
+            { variant: VISUAL_TEN_QUIZ_VARIANT }
+          ),
+          difficulty,
+        ]
+      );
+      await insertQuizQuestionMemoryRows(
+        client,
+        parsed.theme,
+        parsed.questions,
+        memoryMode
+      );
+      await client.query("COMMIT");
+    } catch (dbErr) {
+      await client.query("ROLLBACK").catch(() => {});
+      const dbMessage =
+        dbErr && typeof dbErr.message === "string"
+          ? dbErr.message
+          : "Failed to save quiz";
+      res.status(500).json({ error: dbMessage });
+      return;
+    } finally {
+      client.release();
+      await pool.end().catch(() => {});
+    }
+
+    res.status(200).json({
+      ...stripFactKeyFromQuizPayload(parsed),
+      difficulty,
+      variant: VISUAL_TEN_QUIZ_VARIANT,
+    });
+  } catch (err) {
+    const message =
+      err && typeof err.message === "string" ? err.message : "OpenAI failed";
+    res.status(502).json({ error: message });
+  }
+});
+
 app.post("/api/quiz/check-question", async (req, res) => {
   const { question, questionId, theme } = req.body ?? {};
   let questionText = typeof question === "string" ? question.trim() : "";
@@ -2344,7 +2742,11 @@ app.post("/api/quiz/check-question", async (req, res) => {
 
     try {
       const result = await pool.query(
-        "SELECT * FROM quizzes ORDER BY created_at DESC LIMIT 1"
+        `SELECT * FROM quizzes
+         WHERE (questions::jsonb->>'variant' IS DISTINCT FROM $1)
+         ORDER BY created_at DESC
+         LIMIT 1`,
+        [VISUAL_TEN_QUIZ_VARIANT]
       );
 
       if (result.rows.length > 0) {
@@ -2437,7 +2839,11 @@ app.post("/api/quiz/check-question", async (req, res) => {
       });
       try {
         const diffRes = await replacementMemoryPool.query(
-          "SELECT difficulty FROM quizzes ORDER BY created_at DESC LIMIT 1"
+          `SELECT difficulty FROM quizzes
+           WHERE (questions::jsonb->>'variant' IS DISTINCT FROM $1)
+           ORDER BY created_at DESC
+           LIMIT 1`,
+          [VISUAL_TEN_QUIZ_VARIANT]
         );
         if (diffRes.rows[0]?.difficulty) {
           replacementDifficulty = normalizeQuizDifficulty(

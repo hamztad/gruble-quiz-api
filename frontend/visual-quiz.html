@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="no">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gruble — bilde-quiz (10 spørsmål, prototype)</title>
+    <link rel="stylesheet" href="/frontend/styles.css" />
+    <style>
+      .visual-quiz-badge {
+        display: inline-block;
+        font-size: 12px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #e0e7ff;
+        color: #312e81;
+        margin-bottom: 12px;
+      }
+      .visual-quiz-figure {
+        margin: 0 0 16px;
+        border-radius: 12px;
+        overflow: hidden;
+        border: 1px solid #e5e7eb;
+        background: #f9fafb;
+      }
+      .visual-quiz-figure img {
+        display: block;
+        width: 100%;
+        max-height: 280px;
+        object-fit: cover;
+      }
+      .visual-quiz-figure figcaption {
+        font-size: 13px;
+        color: #4b5563;
+        padding: 8px 12px;
+      }
+      .visual-quiz-meta {
+        font-size: 14px;
+        color: #6b7280;
+        margin-bottom: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>Bilde-quiz (prototype)</h1>
+        <p class="muted">
+          Egen variant: 10 spørsmål, samme bilde gjennom hele quizen. Spørsmål 10 er
+          knyttet til bildet. Standard-quiz påvirkes ikke (annen API-flyt).
+        </p>
+        <span class="visual-quiz-badge">variant: visual-10</span>
+
+        <div class="generate-bar" id="visual-generate-bar">
+          <input
+            type="text"
+            id="visual-theme-input"
+            maxlength="50"
+            placeholder="Tema (f.eks. Norge)"
+            aria-label="Tema for bilde-quiz"
+          />
+          <button type="button" class="primary" id="visual-generate-button">
+            Generer bilde-quiz (10)
+          </button>
+          <label class="generate-bar__subject-mode">
+            <input type="checkbox" id="visual-subject-mode" name="subjectMode" />
+            <span>Fagmodus</span>
+          </label>
+          <label class="generate-bar__difficulty">
+            <span>Vanskegrad</span>
+            <select id="visual-difficulty" name="difficulty" aria-label="Vanskegrad">
+              <option value="easy">Lett</option>
+              <option value="normal" selected>Normal (flere poeng)</option>
+              <option value="hard">Vanskelig (mest poeng)</option>
+            </select>
+          </label>
+          <span class="muted" id="visual-generate-status" role="status"></span>
+        </div>
+        <p class="muted theme-input-hint">
+          Maks 3 ord i tema. API: <code>POST /api/internal/generate-visual-10-quiz</code>,
+          <code>GET /api/quiz/visual-today</code>.
+        </p>
+
+        <div id="visual-app">
+          <p class="muted">Generer eller last inn siste bilde-quiz.</p>
+        </div>
+      </div>
+    </div>
+    <script src="/frontend/visual-quiz.js"></script>
+  </body>
+</html>

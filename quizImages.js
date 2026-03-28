@@ -945,11 +945,51 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
 }
 
 /**
+ * Velg ett delt illustrasjonsbilde (Commons/Pixabay) uten per-spørsmålsrunde.
+ * Brukes av visual-10-varianten; grunnmotorens attachDecorativeQuizImages er uendret.
+ */
+async function pickSharedDecorativeImage(theme, lookup, questionContextText = "") {
+  const primaryQuery = buildPrimaryImageSearchQuery(theme, lookup);
+  const q = String(primaryQuery ?? "").trim();
+  if (!q || q.length < 2) {
+    return null;
+  }
+  const ctx = String(questionContextText ?? "")
+    .trim()
+    .slice(0, 500);
+  const { merged } = await fetchImageCandidatesFromBothSources(q);
+  if (!merged.length) {
+    return null;
+  }
+  const { candidate } = pickBestImageCandidateWithTiers(merged, {
+    theme,
+    questionText: ctx,
+    minScore: 1,
+  });
+  if (!candidate) {
+    return null;
+  }
+  return {
+    url: candidate.url,
+    title: candidate.title,
+    source: candidate.source,
+    credit: candidate.credit,
+    width: candidate.width,
+    height: candidate.height,
+    pageUrl: candidate.pageUrl,
+  };
+}
+
+/**
  * Støtter eldre rader: questions kolonnen er enten et array eller { sharedImage, questions }.
  */
 function normalizeQuizQuestionsFromDb(raw) {
+  const variant =
+    raw && typeof raw === "object" && typeof raw.variant === "string"
+      ? raw.variant.trim()
+      : null;
   if (Array.isArray(raw)) {
-    return { sharedImage: null, questions: raw };
+    return { sharedImage: null, questions: raw, variant: null };
   }
   if (raw && typeof raw === "object" && Array.isArray(raw.questions)) {
     return {
@@ -958,21 +998,27 @@ function normalizeQuizQuestionsFromDb(raw) {
           ? raw.sharedImage
           : null,
       questions: raw.questions,
+      variant,
     };
   }
-  return { sharedImage: null, questions: [] };
+  return { sharedImage: null, questions: [], variant: null };
 }
 
-function serializeQuizForStorage(sharedImage, questions) {
-  return JSON.stringify({
+function serializeQuizForStorage(sharedImage, questions, extra = null) {
+  const base = {
     sharedImage: sharedImage && typeof sharedImage === "object" ? sharedImage : null,
     questions,
-  });
+  };
+  if (extra && typeof extra === "object" && !Array.isArray(extra)) {
+    return JSON.stringify({ ...base, ...extra });
+  }
+  return JSON.stringify(base);
 }
 
 module.exports = {
   findImageCandidates,
   attachDecorativeQuizImages,
+  pickSharedDecorativeImage,
   normalizeQuizQuestionsFromDb,
   serializeQuizForStorage,
 };
