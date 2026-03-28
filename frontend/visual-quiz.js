@@ -1,7 +1,7 @@
 /**
  * Bilde-quiz (visual-10) — presentasjon. Standard app.js er uendret.
  */
-const API_BASE = "https://gruble-quiz-api.onrender.com";
+const API_BASE = window.location.origin;
 const QUIZ_VARIANT = "visual-10";
 const QUESTION_COUNT = 10;
 
@@ -396,12 +396,25 @@ async function generateVisualQuiz() {
   }
 }
 
-document
-  .getElementById("visual-generate-button")
-  ?.addEventListener("click", generateVisualQuiz);
+function initVisualQuizPage() {
+  const generateButton = document.getElementById("visual-generate-button");
+  const loadButton = document.getElementById("visual-load-button");
 
-document.getElementById("visual-load-button")?.addEventListener("click", () => {
-  const statusEl = document.getElementById("visual-generate-status");
-  statusEl.textContent = "";
-  loadVisualQuiz();
-});
+  if (!generateButton || !loadButton) {
+    console.error("[visual-quiz] Missing required controls during init");
+    return;
+  }
+
+  generateButton.addEventListener("click", generateVisualQuiz);
+  loadButton.addEventListener("click", () => {
+    const statusEl = document.getElementById("visual-generate-status");
+    statusEl.textContent = "";
+    loadVisualQuiz();
+  });
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initVisualQuizPage);
+} else {
+  initVisualQuizPage();
+}
