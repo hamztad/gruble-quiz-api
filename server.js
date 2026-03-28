@@ -814,7 +814,11 @@ async function maybeBuildThemeLookupSupport(theme) {
   }
 }
 
-function buildQuizUserPrompt(theme, questionCount, lookup) {
+/**
+ * Bygger brukerprompt til quizgenerering.
+ * @param {boolean} subjectMode Nytt: når true, tolkes temaet som skolefag (eksplisitt brukervalg).
+ */
+function buildQuizUserPrompt(theme, questionCount, lookup, subjectMode = false) {
   const themeJson = JSON.stringify(theme);
   let prompt = `Generer ${questionCount} enkle flervalgsoppgaver på norsk om temaet: ${themeJson}.
 
@@ -865,6 +869,22 @@ Ikke lag spørsmål om konkrete personer, hendelser, verk, TV-serier eller kampa
 Bruk bare generelle og dokumenterbare fakta som kan forsvares direkte ut fra temaet.`;
   }
 
+  /* Nytt: fagmodus — kun når brukeren eksplisitt ber om det (subjectMode i API). */
+  if (subjectMode) {
+    prompt += `
+
+FAGMODUS (aktiv — eksplisitt valgt av brukeren):
+Temaet skal tolkes som et skolefag eller undervisningsemne, ikke som ordets etymologi, ikke som generell «trivia» om Norge eller begrepet i seg selv med mindre det er naturlig innen faget.
+Lag oppgaver som er typiske i skolen innen dette faget, for eksempel:
+- norsk: grammatikk, ordklasser, rettskriving, teksttyper, litteratur og språklige begreper som brukes i faget
+- matematikk / matte: prosent, brøk, desimaler, regnerekkefølge, enkle likninger, geometriske begreper
+- samfunnsfag: demokrati, Stortinget, grunnleggende samfunnsbegreper, kart og geografi, historie der det hører naturlig til faget
+- engelsk: ordforråd, grammatikk og språklig stoff på engelsk som i språkfaget
+- naturfag / historie: faglige begreper og stoff som i læreplanen for faget
+
+Dette endrer ikke kvalitetskravene: hvert spørsmål skal fortsatt ha nøyaktig én klar og dokumenterbar fasit, være fullt selvstendig (ingen skjult kontekst), ikke være avhengig av å se svaralternativene, og ikke være vage eller åpent tolkbare.`;
+  }
+
   prompt += `
 
 Returner KUN JSON med denne formen (ingen markdown):
@@ -885,10 +905,12 @@ async function generateQuizWithOpenAI(
   model,
   theme,
   questionCount,
-  memoryOptions = null
+  memoryOptions = null,
+  subjectMode = false
 ) {
   // Nytt: korte/tvetydige tema får et forsiktig oppslag mot Wikipedia før modellkallet.
   const lookup = await maybeBuildThemeLookupSupport(theme);
+  console.log(`[quiz mode] subjectMode=${subjectMode ? "true" : "false"}`);
   console.log(`[quiz lookup] theme=${JSON.stringify(theme)}`);
   console.log(`[quiz lookup] vague=${lookup.vague ? "true" : "false"}`);
   if (lookup.vague) {
@@ -910,7 +932,12 @@ async function generateQuizWithOpenAI(
       `[quiz lookup] parts=${JSON.stringify(lookup.splitParts || [])}`
     );
   }
-  const userPrompt = buildQuizUserPrompt(theme, questionCount, lookup);
+  const userPrompt = buildQuizUserPrompt(
+    theme,
+    questionCount,
+    lookup,
+    subjectMode
+  );
   console.log(
     `[quiz lookup] promptHasLookupContext=${lookup.context ? "true" : "false"}`
   );
@@ -1535,6 +1562,9 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
       ? QUIZ_MEMORY_MODE.DAILY
       : QUIZ_MEMORY_MODE.CUSTOM;
 
+  /* Nytt: fagmodus — kun ved eksplisitt JSON boolean true (ingen auto-gjetting, ingen "truthy" strenger). */
+  const subjectMode = req.body?.subjectMode === true;
+
   try {
     const questionCount = 5;
     const databaseUrl = process.env.DATABASE_URL;
@@ -1553,10 +1583,17 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
 
     let parsed;
     try {
-      parsed = await generateQuizWithOpenAI(openai, model, theme, questionCount, {
-        pool,
-        mode: memoryMode,
-      });
+      parsed = await generateQuizWithOpenAI(
+        openai,
+        model,
+        theme,
+        questionCount,
+        {
+          pool,
+          mode: memoryMode,
+        },
+        subjectMode
+      );
     } catch (genErr) {
       await pool.end().catch(() => {});
       throw genErr;

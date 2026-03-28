@@ -439,6 +439,24 @@ button:disabled {
   font-family: inherit;
 }
 
+/* Nytt: fagmodus — diskret avkrysning ved siden av generer-knappen */
+.generate-bar__subject-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #166534;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.generate-bar__subject-mode input {
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: #15803d;
+}
+
 #generate-status {
   flex-basis: 100%;
   font-size: 14px;

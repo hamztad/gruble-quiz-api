@@ -259,11 +259,14 @@ async function generateNewQuiz() {
   statusEl.innerHTML = `${loadingSpinnerMarkup()}<span> Genererer quiz…</span>`;
   statusEl.classList.add("generate-status--loading");
 
+  const subjectModeEl = document.getElementById("generate-subject-mode");
+  const subjectMode = Boolean(subjectModeEl?.checked);
+
   try {
     const res = await fetch(`${API_BASE}/api/internal/generate-test-quiz`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ theme }),
+      body: JSON.stringify({ theme, subjectMode }),
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {

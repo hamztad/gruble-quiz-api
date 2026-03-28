@@ -50,9 +50,19 @@
           <button type="button" class="primary" id="generate-quiz-button">
             Generer ny quiz
           </button>
+          <label class="generate-bar__subject-mode">
+            <input
+              type="checkbox"
+              id="generate-subject-mode"
+              name="subjectMode"
+            />
+            <span>Fagmodus</span>
+          </label>
           <span class="muted" id="generate-status" role="status"></span>
         </div>
-        <p class="muted theme-input-hint">Maks 3 ord</p>
+        <p class="muted theme-input-hint">
+          Maks 3 ord. Fagmodus: tema tolkes som skolefag (f.eks. norsk, matte).
+        </p>
 
         <div id="app">
           <p class="loading-inline">
