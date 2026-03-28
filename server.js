@@ -31,6 +31,64 @@ const GENERATE_QUIZ_SYSTEM = readPromptFile("generateQuiz.txt");
 const CHECK_QUESTION_SYSTEM = readPromptFile("checkQuestionSuitability.txt");
 const EVALUATE_PROTEST_SYSTEM = readPromptFile("evaluateProtest.txt");
 
+/** @param {unknown} raw */
+function normalizeQuizDifficulty(raw) {
+  const s = String(raw ?? "").trim().toLowerCase();
+  if (s === "easy" || s === "lett") {
+    return "easy";
+  }
+  if (s === "hard" || s === "vanskelig") {
+    return "hard";
+  }
+  return "normal";
+}
+
+/** Poengmultiplikator for riktige svar (server-styrt ut fra lagret quiz). */
+function getQuizDifficultyPointMultiplier(difficulty) {
+  switch (normalizeQuizDifficulty(difficulty)) {
+    case "easy":
+      return 0.9;
+    case "hard":
+      return 1.5;
+    default:
+      return 1;
+  }
+}
+
+const QUIZ_DIFFICULTY_GENERATION_INSTRUCTIONS = {
+  easy: `VANSKEGRAD — LETT
+- Velg velkjente fakta og tydelige spørsmål som krever grunnleggende kunnskap.
+- Feilsvar skal være plausibel feil, men klart svakere enn fasiten for den som kan stoffet.`,
+  normal: `VANSKEGRAD — NORMAL (standard)
+- Balanse mellom tilgjengelighet og kunnskapskrav, i tråd med øvrige regler i denne systemmeldingen.`,
+  hard: `VANSKEGRAD — VANSKELIG
+- Still mer presise eller spesifikke spørsmål som krever solid kunnskap, fortsatt med nøyaktig én entydig, dokumenterbar fasit.
+- Lag feilsvar som er mer krevende og sannsynlige for noen som kan litt, uten flere riktige svar.
+- Ikke bruk obskur eller udokumenterbar trivia som bryter trygghets- og sannhetskravene over.`,
+};
+
+/** @param {unknown} difficulty */
+function buildGenerateQuizSystemContent(difficulty) {
+  const d = normalizeQuizDifficulty(difficulty);
+  const extra =
+    QUIZ_DIFFICULTY_GENERATION_INSTRUCTIONS[d] ||
+    QUIZ_DIFFICULTY_GENERATION_INSTRUCTIONS.normal;
+  return `${GENERATE_QUIZ_SYSTEM}\n\n---\n\n${extra}`;
+}
+
+/**
+ * @param {number} points
+ * @param {unknown} difficulty
+ */
+function applyQuizDifficultyToPoints(points, difficulty) {
+  const n = Number(points);
+  if (!Number.isFinite(n) || n <= 0) {
+    return 0;
+  }
+  const m = getQuizDifficultyPointMultiplier(difficulty);
+  return Math.max(0, Math.round(n * m));
+}
+
 /** Nytt: maksimal lengde og ord for tema ved quizgenerering fra brukerinput. */
 const THEME_INPUT_MAX_CHARS = 50;
 const THEME_INPUT_MAX_WORDS = 3;
@@ -119,6 +177,10 @@ async function setupTestTable() {
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    await pool.query(`
+      ALTER TABLE quizzes
+      ADD COLUMN IF NOT EXISTS difficulty TEXT NOT NULL DEFAULT 'normal'
+    `);
     /* Nytt: minne for duplikatkontroll av spørsmålstekster (første versjon). */
     await pool.query(`
       CREATE TABLE IF NOT EXISTS quiz_question_memory (
@@ -155,7 +217,7 @@ async function setupTestTable() {
 
     if (quizCountResult.rows[0].count === 0) {
       await pool.query(
-        "INSERT INTO quizzes (theme, questions) VALUES ($1, $2::jsonb)",
+        "INSERT INTO quizzes (theme, questions, difficulty) VALUES ($1, $2::jsonb, $3)",
         [
           "Test",
           JSON.stringify([
@@ -166,6 +228,7 @@ async function setupTestTable() {
               answer: "Oslo",
             },
           ]),
+          "normal",
         ]
       );
     }
@@ -933,13 +996,15 @@ async function maybeBuildThemeLookupSupport(theme) {
  * Bygger brukerprompt til quizgenerering.
  * @param {boolean} subjectMode Nytt: når true, tolkes temaet som skolefag (eksplisitt brukervalg).
  * @param {{ needOnly: number, existingQuestions: object[] }|null} topUp når flere modellkall trengs for å nå 5 spørsmål
+ * @param {string} [difficulty] easy | normal | hard (normal hvis utelatt)
  */
 function buildQuizUserPrompt(
   theme,
   questionCount,
   lookup,
   subjectMode = false,
-  topUp = null
+  topUp = null,
+  difficulty = "normal"
 ) {
   const themeJson = JSON.stringify(theme);
   const need =
@@ -970,7 +1035,13 @@ Generer ${need} NYE flervalgsoppgaver. Målet er at listen "questions" i JSON ha
 Målet er at listen "questions" i JSON har nøyaktig ${need} elementer.`;
   }
 
+  const diffNorm = normalizeQuizDifficulty(difficulty);
+  const diffHuman =
+    diffNorm === "easy" ? "lett" : diffNorm === "hard" ? "vanskelig" : "normal";
+
   prompt += `
+
+Vanskegrad for denne quizen: ${diffHuman}. Følg VANSKEGRAD-delen i systemmeldingen.
 
 Bruk bare trygg kunnskap eller eksplisitt faktastøtte i denne samtalen — ikke gjettverk eller oppdiktede synonymer. Ved trangt tema: utvid forsiktig til nærliggende undertema i samme fagområde og strev mot nøyaktig ${need} gyldige spørsmål i dette JSON-svaret (ikke finn på fakta for å fylle ut).`;
 
@@ -1091,9 +1162,12 @@ async function generateQuizWithOpenAI(
   theme,
   questionCount,
   memoryOptions = null,
-  subjectMode = false
+  subjectMode = false,
+  difficulty = "normal"
 ) {
+  const diffNorm = normalizeQuizDifficulty(difficulty);
   console.log(`[quiz mode] subjectMode=${subjectMode ? "true" : "false"}`);
+  console.log(`[quiz mode] difficulty=${diffNorm}`);
   /* Nytt: i fagmodus hopper vi over lookup for å unngå at tvetydige ord som "norsk"
      blir låst til oppslagsbetydning (ord/språk) i stedet for skolefag. */
   const lookup = subjectMode
@@ -1158,7 +1232,8 @@ async function generateQuizWithOpenAI(
       subjectMode,
       accumulated.length > 0
         ? { needOnly: need, existingQuestions: accumulated }
-        : null
+        : null,
+      diffNorm
     );
 
     const parsed = await parseJsonChatCompletion(
@@ -1167,7 +1242,7 @@ async function generateQuizWithOpenAI(
         messages: [
           {
             role: "system",
-            content: GENERATE_QUIZ_SYSTEM,
+            content: buildGenerateQuizSystemContent(diffNorm),
           },
           { role: "user", content: userPrompt },
         ],
@@ -1318,6 +1393,7 @@ app.get("/api/quiz/today", async (_req, res) => {
 
     res.status(200).json({
       theme: quiz.theme,
+      difficulty: normalizeQuizDifficulty(quiz.difficulty),
       sharedImage: sharedImage || null,
       questions: questionsForClient,
     });
@@ -1360,6 +1436,7 @@ app.post("/api/quiz/answer", async (req, res) => {
     }
 
     const quiz = result.rows[0];
+    const quizDifficulty = normalizeQuizDifficulty(quiz.difficulty);
     const { questions } = getQuizQuestionsPayloadFromRow(quiz);
 
     const overrideQuestion =
@@ -1389,7 +1466,8 @@ app.post("/api/quiz/answer", async (req, res) => {
       const attempt = Math.min(4, Math.max(1, Number(attemptNumber) || 1));
       let points = 0;
       if (correct) {
-        points = Math.max(0, 4 - attempt);
+        const base = Math.max(0, 4 - attempt);
+        points = applyQuizDifficultyToPoints(base, quizDifficulty);
       }
       res.status(200).json({ correct, points });
       return;
@@ -1436,7 +1514,7 @@ app.post("/api/quiz/answer", async (req, res) => {
 
     res.status(200).json({
       correct: evaluated.correct,
-      points: evaluated.points,
+      points: applyQuizDifficultyToPoints(evaluated.points, quizDifficulty),
       feedback: evaluated.feedback,
     });
   } catch (err) {
@@ -2036,6 +2114,7 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
 
   /* Nytt: fagmodus — kun ved eksplisitt JSON boolean true (ingen auto-gjetting, ingen "truthy" strenger). */
   const subjectMode = req.body?.subjectMode === true;
+  const difficulty = normalizeQuizDifficulty(req.body?.difficulty);
 
   try {
     const questionCount = 5;
@@ -2064,7 +2143,8 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
           pool,
           mode: memoryMode,
         },
-        subjectMode
+        subjectMode,
+        difficulty
       );
     } catch (genErr) {
       await pool.end().catch(() => {});
@@ -2075,10 +2155,11 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
     try {
       await client.query("BEGIN");
       await client.query(
-        "INSERT INTO quizzes (theme, questions) VALUES ($1, $2::jsonb)",
+        "INSERT INTO quizzes (theme, questions, difficulty) VALUES ($1, $2::jsonb, $3)",
         [
           parsed.theme.trim(),
           serializeQuizForStorage(parsed.sharedImage ?? null, parsed.questions),
+          difficulty,
         ]
       );
       await insertQuizQuestionMemoryRows(
@@ -2101,7 +2182,10 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
       await pool.end().catch(() => {});
     }
 
-    res.status(200).json(stripFactKeyFromQuizPayload(parsed));
+    res.status(200).json({
+      ...stripFactKeyFromQuizPayload(parsed),
+      difficulty,
+    });
   } catch (err) {
     const message =
       err && typeof err.message === "string" ? err.message : "OpenAI failed";
@@ -2216,6 +2300,7 @@ app.post("/api/quiz/check-question", async (req, res) => {
 
   let replacementQuestion;
   let replacementMemoryPool = null;
+  let replacementDifficulty = "normal";
   try {
     const dbUrl = process.env.DATABASE_URL;
     if (dbUrl) {
@@ -2226,6 +2311,18 @@ app.post("/api/quiz/check-question", async (req, res) => {
             ? { rejectUnauthorized: false }
             : undefined,
       });
+      try {
+        const diffRes = await replacementMemoryPool.query(
+          "SELECT difficulty FROM quizzes ORDER BY created_at DESC LIMIT 1"
+        );
+        if (diffRes.rows[0]?.difficulty) {
+          replacementDifficulty = normalizeQuizDifficulty(
+            diffRes.rows[0].difficulty
+          );
+        }
+      } catch {
+        replacementDifficulty = "normal";
+      }
     }
     const replacementQuiz = await generateQuizWithOpenAI(
       openai,
@@ -2234,7 +2331,9 @@ app.post("/api/quiz/check-question", async (req, res) => {
       1,
       replacementMemoryPool
         ? { pool: replacementMemoryPool, mode: QUIZ_MEMORY_MODE.CUSTOM }
-        : null
+        : null,
+      false,
+      replacementDifficulty
     );
     replacementQuestion = replacementQuiz.questions[0];
     if (replacementQuestion && Number.isFinite(Number(questionId))) {
@@ -2259,7 +2358,7 @@ app.post("/api/quiz/check-question", async (req, res) => {
   res.status(200).json({
     valid: false,
     message: "Du har rett, spørsmålet egner seg ikke for skrivesvar.",
-    points: 5,
+    points: applyQuizDifficultyToPoints(5, replacementDifficulty),
     question: replacementQuestion,
   });
 });

@@ -313,7 +313,9 @@ Hvis du er i tvil:
 - gjør spørsmålet mer spesifikt
 - eller forkast det og lag et nytt
 
-Kvalitet er viktigere enn vanskelighetsgrad
+Når systemmeldingen har en egen VANSKEGRAD-blokk (lett / normal / vanskelig), skal den følges — den overstyrer ikke krav om sannhet og entydig fasit.
+
+Kvalitet er viktigere enn ren «tøffhet» for tøffhetens skyld
 
 HÅNDTERING AV VAGE TEMA
 

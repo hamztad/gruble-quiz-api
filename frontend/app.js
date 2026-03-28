@@ -29,6 +29,8 @@ const MAX_PROTEST_USER_MESSAGES = 5;
 /** @type {Record<string, ProtestStateFinalized | ProtestStateActive>} */
 const state = {
   theme: "",
+  /** @type {'easy'|'normal'|'hard'} */
+  difficulty: "normal",
   /** @type {null | { url: string, title?: string, credit: string, source?: string, pageUrl?: string }} */
   sharedImage: null,
   questions: [],
@@ -39,6 +41,14 @@ const state = {
 };
 
 const app = document.getElementById("app");
+
+/** @param {unknown} d */
+function difficultyDisplayLabel(d) {
+  const x = String(d ?? "normal").toLowerCase();
+  if (x === "easy") return "Lett";
+  if (x === "hard") return "Vanskelig";
+  return "Normal";
+}
 
 /** Inline spinnere for ventetilstand (generering, innsending, sjekk). */
 function loadingSpinnerMarkup() {
@@ -209,6 +219,11 @@ async function loadQuiz() {
     const data = await response.json();
 
     state.theme = data.theme || "";
+    const diffRaw = data.difficulty;
+    state.difficulty =
+      diffRaw === "easy" || diffRaw === "hard" || diffRaw === "normal"
+        ? diffRaw
+        : "normal";
     state.sharedImage =
       data.sharedImage &&
       typeof data.sharedImage === "object" &&
@@ -260,12 +275,16 @@ async function generateNewQuiz() {
 
   const subjectModeEl = document.getElementById("generate-subject-mode");
   const subjectMode = Boolean(subjectModeEl?.checked);
+  const difficultyEl = document.getElementById("generate-difficulty");
+  const difficultyRaw = String(difficultyEl?.value ?? "normal").toLowerCase();
+  const difficulty =
+    difficultyRaw === "easy" || difficultyRaw === "hard" ? difficultyRaw : "normal";
 
   try {
     const res = await fetch(`${API_BASE}/api/internal/generate-test-quiz`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ theme, subjectMode }),
+      body: JSON.stringify({ theme, subjectMode, difficulty }),
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -356,10 +375,10 @@ function render() {
     } else if (qs.removedOptions.length > 0 && !qs.answered) {
       resultClass = "result hint";
       resultText =
-        "Feil alternativ er fjernet. Prøv igjen. (3 / 2 / 1 / 0 poeng ved riktig svar.)";
+        "Feil alternativ er fjernet. Prøv igjen. Færre poeng for hvert nytt forsøk; endelig poeng skaleres med vanskegrad.";
     } else {
       resultText =
-        "Velg et svaralternativ. Første riktige gir 3 poeng, deretter 2, 1 og 0.";
+        "Velg et svaralternativ. Første riktige forsøk gir mest poeng; videre forsøk gir mindre (skalert med vanskegrad).";
     }
     const optLocked = qs.answered || qs.mcSubmitting;
     answerBlock = `
@@ -566,7 +585,9 @@ function render() {
         <button type="button" class="ghost" id="restart-button">Start på nytt</button>
       </div>
     </div>
-    <p><strong>Tema:</strong> ${escapeHtml(state.theme)}</p>
+    <p><strong>Tema:</strong> ${escapeHtml(state.theme)} · <strong>Vanskegrad:</strong> ${escapeHtml(
+    difficultyDisplayLabel(state.difficulty)
+  )}</p>
     ${
       state.sharedImage && state.sharedImage.url
         ? quizDecorativeImageFigure(state.sharedImage)
@@ -633,7 +654,9 @@ function render() {
             <span class="score-pill">Totalscore: ${state.totalScore} poeng</span>
             <button type="button" class="ghost" id="restart-end">Start på nytt</button>
           </div>
-          <p><strong>Tema:</strong> ${escapeHtml(state.theme)}</p>
+          <p><strong>Tema:</strong> ${escapeHtml(state.theme)} · <strong>Vanskegrad:</strong> ${escapeHtml(
+            difficultyDisplayLabel(state.difficulty)
+          )}</p>
           <h2>Quizen er ferdig</h2>
           <p>Du endte med <strong>${state.totalScore}</strong> poeng totalt.</p>
           <p class="muted">Takk for testen.</p>

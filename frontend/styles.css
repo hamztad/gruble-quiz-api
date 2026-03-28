@@ -457,6 +457,26 @@ button:disabled {
   accent-color: #15803d;
 }
 
+.generate-bar__difficulty {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #166534;
+  white-space: nowrap;
+}
+
+.generate-bar__difficulty select {
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  background: #fff;
+  color: #14532d;
+  max-width: 200px;
+}
+
 #generate-status {
   flex-basis: 100%;
   font-size: 14px;

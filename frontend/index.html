@@ -58,10 +58,19 @@
             />
             <span>Fagmodus</span>
           </label>
+          <label class="generate-bar__difficulty">
+            <span>Vanskegrad</span>
+            <select id="generate-difficulty" name="difficulty" aria-label="Vanskegrad for ny quiz">
+              <option value="easy">Lett (færre poeng)</option>
+              <option value="normal" selected>Normal</option>
+              <option value="hard">Vanskelig (flere poeng)</option>
+            </select>
+          </label>
           <span class="muted" id="generate-status" role="status"></span>
         </div>
         <p class="muted theme-input-hint">
           Maks 3 ord. Fagmodus: tema tolkes som skolefag (f.eks. norsk, matte).
+          Poeng for riktige svar skaleres med valgt vanskegrad (server).
         </p>
 
         <div id="app">
