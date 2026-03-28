@@ -253,6 +253,32 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.quiz-figure {
+  margin: 14px 0 18px;
+  padding: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+}
+
+.quiz-figure__img {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  vertical-align: middle;
+}
+
+.quiz-figure__credit {
+  display: block;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #6b7280;
+  background: #fff;
+}
+
 .mode-choice {
   display: grid;
   grid-template-columns: 1fr 1fr;

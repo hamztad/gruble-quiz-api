@@ -7,6 +7,11 @@ const crypto = require("crypto");
 const multer = require("multer");
 const { Pool } = require("pg");
 const OpenAI = require("openai");
+const {
+  attachDecorativeQuizImages,
+  normalizeQuizQuestionsFromDb,
+  serializeQuizForStorage,
+} = require("./quizImages");
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -115,6 +120,19 @@ async function setupTestTable() {
 }
 
 setupTestTable();
+
+/** Leser questions JSONB (array el. { sharedImage, questions }). */
+function getQuizQuestionsPayloadFromRow(quizRow) {
+  try {
+    const raw =
+      typeof quizRow.questions === "string"
+        ? JSON.parse(quizRow.questions)
+        : JSON.parse(JSON.stringify(quizRow.questions));
+    return normalizeQuizQuestionsFromDb(raw);
+  } catch {
+    return { sharedImage: null, questions: [] };
+  }
+}
 
 app.get("/", (_req, res) => {
   res.status(200).send("Gruble API kjører");
@@ -270,10 +288,7 @@ async function fetchAnswerForProtestFromDb(questionId) {
       return "";
     }
     const quiz = result.rows[0];
-    const questions =
-      typeof quiz.questions === "string"
-        ? JSON.parse(quiz.questions)
-        : JSON.parse(JSON.stringify(quiz.questions));
+    const { questions } = getQuizQuestionsPayloadFromRow(quiz);
     const q = questions.find((item) => Number(item.id) === Number(questionId));
     if (!q || q.answer === undefined || q.answer === null) {
       return "";
@@ -895,9 +910,30 @@ async function generateQuizWithOpenAI(openai, model, theme, questionCount) {
       continue;
     }
 
+    const shuffled = parsed.questions.map(shuffleQuestionOptions);
+    let finalQuestions = shuffled;
+    let sharedImage = null;
+    try {
+      const decorated = await attachDecorativeQuizImages(
+        theme,
+        lookup,
+        shuffled
+      );
+      finalQuestions = decorated.questions;
+      sharedImage = decorated.sharedImage;
+    } catch (imgErr) {
+      console.warn(
+        "[quiz image] attach failed:",
+        imgErr && typeof imgErr.message === "string"
+          ? imgErr.message
+          : String(imgErr)
+      );
+    }
+
     return {
       ...parsed,
-      questions: parsed.questions.map(shuffleQuestionOptions),
+      questions: finalQuestions,
+      sharedImage,
     };
   }
 
@@ -932,10 +968,7 @@ app.get("/api/quiz/today", async (_req, res) => {
     }
 
     const quiz = result.rows[0];
-    const questions =
-      typeof quiz.questions === "string"
-        ? JSON.parse(quiz.questions)
-        : JSON.parse(JSON.stringify(quiz.questions));
+    const { sharedImage, questions } = getQuizQuestionsPayloadFromRow(quiz);
 
     const questionsForClient = questions.map((q) => {
       const { answer, ...rest } = q;
@@ -944,6 +977,7 @@ app.get("/api/quiz/today", async (_req, res) => {
 
     res.status(200).json({
       theme: quiz.theme,
+      sharedImage: sharedImage || null,
       questions: questionsForClient,
     });
   } catch (err) {
@@ -985,10 +1019,7 @@ app.post("/api/quiz/answer", async (req, res) => {
     }
 
     const quiz = result.rows[0];
-    const questions =
-      typeof quiz.questions === "string"
-        ? JSON.parse(quiz.questions)
-        : JSON.parse(JSON.stringify(quiz.questions));
+    const { questions } = getQuizQuestionsPayloadFromRow(quiz);
 
     const overrideQuestion =
       questionOverride &&
@@ -1442,7 +1473,10 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
     try {
       await pool.query(
         "INSERT INTO quizzes (theme, questions) VALUES ($1, $2::jsonb)",
-        [parsed.theme.trim(), JSON.stringify(parsed.questions)]
+        [
+          parsed.theme.trim(),
+          serializeQuizForStorage(parsed.sharedImage ?? null, parsed.questions),
+        ]
       );
     } catch (dbErr) {
       const dbMessage =
@@ -1495,10 +1529,7 @@ app.post("/api/quiz/check-question", async (req, res) => {
 
       if (result.rows.length > 0) {
         const quiz = result.rows[0];
-        const questions =
-          typeof quiz.questions === "string"
-            ? JSON.parse(quiz.questions)
-            : JSON.parse(JSON.stringify(quiz.questions));
+        const { questions } = getQuizQuestionsPayloadFromRow(quiz);
 
         if (!questionText) {
           const matchedQuestion = pickQuestionFromBody(req.body, questions);

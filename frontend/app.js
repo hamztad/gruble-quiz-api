@@ -29,6 +29,8 @@ const MAX_PROTEST_USER_MESSAGES = 5;
 /** @type {Record<string, ProtestStateFinalized | ProtestStateActive>} */
 const state = {
   theme: "",
+  /** @type {null | { url: string, title?: string, credit: string, source?: string, pageUrl?: string }} */
+  sharedImage: null,
   questions: [],
   currentIndex: 0,
   totalScore: 0,
@@ -208,6 +210,12 @@ async function loadQuiz() {
     const data = await response.json();
 
     state.theme = data.theme || "";
+    state.sharedImage =
+      data.sharedImage &&
+      typeof data.sharedImage === "object" &&
+      typeof data.sharedImage.url === "string"
+        ? data.sharedImage
+        : null;
     const rawQuestions = Array.isArray(data.questions) ? data.questions : [];
     state.questions = shuffleQuizOptions(rawQuestions);
     state.currentIndex = 0;
@@ -564,6 +572,11 @@ function render() {
       </div>
     </div>
     <p><strong>Tema:</strong> ${escapeHtml(state.theme)}</p>
+    ${
+      state.sharedImage && state.sharedImage.url
+        ? quizDecorativeImageFigure(state.sharedImage)
+        : ""
+    }
     <span class="question-number">Spørsmål ${state.currentIndex + 1} av ${
     state.questions.length
   }</span>
@@ -571,6 +584,13 @@ function render() {
       revisionMode
         ? '<h2 class="revision-heading">Dette spørsmålet revideres.</h2>'
         : `<h2>${escapeHtml(question.question)}</h2>`
+    }
+    ${
+      !state.sharedImage?.url &&
+      question.image &&
+      typeof question.image.url === "string"
+        ? quizDecorativeImageFigure(question.image)
+        : ""
     }
     ${answerBlock}
     <div id="result" class="${resultClass}">
@@ -914,6 +934,30 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+/** Dekorbilde fra API (fase 1 — ikke nødvendig for å svare). */
+function quizDecorativeImageFigure(image) {
+  if (!image || typeof image.url !== "string" || !image.url.trim()) {
+    return "";
+  }
+  const url = escapeHtml(image.url.trim());
+  const alt = escapeHtml(
+    (image.title && String(image.title).trim()) || "Illustrasjon til quizen"
+  );
+  const credit = escapeHtml(
+    typeof image.credit === "string" ? image.credit.trim() : ""
+  );
+  return `
+    <figure class="quiz-figure" role="group" aria-label="Illustrasjon">
+      <img class="quiz-figure__img" src="${url}" alt="${alt}" loading="lazy" decoding="async" />
+      ${
+        credit
+          ? `<figcaption class="quiz-figure__credit">${credit}</figcaption>`
+          : ""
+      }
+    </figure>
+  `;
 }
 
 const VOICE_MAX_MS = 60000;
