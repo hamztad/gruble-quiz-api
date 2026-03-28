@@ -65,11 +65,14 @@ const QUIZ_DIFFICULTY_GENERATION_INSTRUCTIONS = {
 - Balanse mellom tilgjengelighet og kunnskapskrav, i tråd med øvrige regler i denne systemmeldingen.`,
   normal: `VANSKEGRAD — NORMAL
 - Still mer presise eller spesifikke spørsmål som krever solid kunnskap, fortsatt med nøyaktig én entydig, dokumenterbar fasit.
-- Lag feilsvar som er mer krevende og sannsynlige for noen som kan litt, uten flere riktige svar.`,
+- Lag feilsvar som er mer krevende og sannsynlige for noen som kan litt, uten flere riktige svar.
+- Unngå de aller mest opplagte «første-faktum»-spørsmålene om temaet.
+- Unngå helt grunnleggende skolebokspørsmål som de fleste kan svare på umiddelbart uten fordypning, som «Hvilket organ pumper blod gjennom kroppen?» eller «Hva heter hovedstaden i Norge?».`,
   hard: `VANSKEGRAD — VANSKELIG
 - Still tydelig mer krevende spørsmål enn NORMAL, med smalere eller mindre opplagte, men fortsatt godt dokumenterbare fakta.
 - Lag feilsvar som ligger tett opptil fasiten i type, detaljnivå eller periode, uten at flere svar kan forsvares.
 - Foretrekk spørsmål som skiller god kunnskap fra overflatisk gjetting.
+- Unngå brede, innledende eller veldig kjente faktaspørsmål; velg heller et mindre opplagt, men fortsatt rettferdig og dokumenterbart snitt av temaet.
 - Ikke bruk obskur eller udokumenterbar trivia som bryter trygghets- og sannhetskravene over.`,
 };
 
@@ -1266,7 +1269,8 @@ async function generateQuizWithOpenAI(
       1,
       need,
       lookup,
-      subjectMode
+      subjectMode,
+      diffNorm
     );
     if (validationError) {
       lastValidationError = validationError;
@@ -1328,7 +1332,8 @@ async function generateQuizWithOpenAI(
         questionCount,
         questionCount,
         lookup,
-        subjectMode
+        subjectMode,
+        diffNorm
       );
       if (finalErr) {
         lastValidationError = finalErr;
@@ -1775,6 +1780,44 @@ function getVagueQuestionValidationError(questionText) {
   return null;
 }
 
+/**
+ * Defensiv sperre mot spørsmål som er for elementære til valgt vanskegrad.
+ * Bevisst smal: stopper bare tydelige «første-faktum»-spørsmål på normal/hard.
+ */
+function getTooEasyForDifficultyValidationError(questionText, difficulty) {
+  const diff = normalizeQuizDifficulty(difficulty);
+  if (diff === "easy") {
+    return null;
+  }
+
+  const text = String(questionText ?? "").trim().toLowerCase();
+  if (!text) {
+    return null;
+  }
+
+  const ultraBasicPatterns = [
+    /\bhvilket organ pumper blod gjennom kroppen\b/i,
+    /\bhva heter hovedstaden i\b/i,
+    /\bhvilken planet er nærmest solen\b/i,
+    /\bhva er kroppens største organ\b/i,
+    /\bhva kalles prosessen der planter lager sin egen næring\b/i,
+  ];
+
+  if (ultraBasicPatterns.some((re) => re.test(text))) {
+    return "is too basic for selected difficulty";
+  }
+
+  if (
+    diff === "hard" &&
+    text.length <= 42 &&
+    /^(hva er|hva heter|hva kalles|hvilket organ|hvilken planet)\b/i.test(text)
+  ) {
+    return "is too basic for hard difficulty";
+  }
+
+  return null;
+}
+
 /** Spørsmål om alias / folkelige navn uten dokumentasjon er høy hallusinasjonsrisiko (f.eks. oppdiktede «vanlige navn»). */
 const ALTERNATE_NAME_HALLUCINATION_PATTERNS = [
   /\bet annet navn (?:for|på)\b/i,
@@ -1953,7 +1996,8 @@ function validateGeneratedQuiz(
   minQuestions = 3,
   maxQuestions = 5,
   lookup = null,
-  subjectMode = false
+  subjectMode = false,
+  difficulty = "easy"
 ) {
   if (!payload || typeof payload !== "object") {
     return "Invalid payload";
@@ -2008,6 +2052,13 @@ function validateGeneratedQuiz(
     const vagueQuestionError = getVagueQuestionValidationError(q.question);
     if (vagueQuestionError) {
       return `question ${i} ${vagueQuestionError}`;
+    }
+    const tooEasyError = getTooEasyForDifficultyValidationError(
+      q.question,
+      difficulty
+    );
+    if (tooEasyError) {
+      return `question ${i} ${tooEasyError}`;
     }
     const aliasHallucinationError = getAlternateNameHallucinationValidationError(
       q,
