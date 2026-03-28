@@ -378,7 +378,8 @@ async function searchWikipediaTitles(theme) {
     action: "query",
     list: "search",
     srsearch: theme,
-    srlimit: "6",
+    /** Litt flere treff slik at vi kan plukke navneartikkel + noen biografier uten nytt søk */
+    srlimit: "15",
     utf8: "1",
     format: "json",
   }).toString();
@@ -404,6 +405,107 @@ function pickLookupTitles(theme, titles) {
     }
   }
   return [...new Set(picked)].slice(0, 3);
+}
+
+/**
+ * Ett enkelt ord som ser ut som fornavn → kan forsøke biografitreff fra samme søkeliste.
+ * Bevisst snever: unngår å gjette "person" for Mercury, Rose (ting/plante) osv.
+ */
+function themeLooksLikeSingleFirstName(theme) {
+  const raw = String(theme ?? "").trim();
+  if (!raw) {
+    return false;
+  }
+  const words = raw.split(/\s+/).filter(Boolean);
+  if (words.length !== 1 || raw.length > 22) {
+    return false;
+  }
+  return /^[\p{L}]+$/u.test(raw);
+}
+
+/** Enkeltord som ofte er ting/planeter/planter — ikke forsøk biografioppslag for disse. */
+function themeAllowsPersonArticleLookup(theme) {
+  if (!themeLooksLikeSingleFirstName(theme)) {
+    return false;
+  }
+  const block = new Set([
+    "mercury",
+    "mars",
+    "venus",
+    "jupiter",
+    "saturn",
+    "uranus",
+    "neptune",
+    "pluto",
+    "rose",
+    "lily",
+    "iris",
+    "ruby",
+    "jade",
+  ]);
+  return !block.has(String(theme).trim().toLowerCase());
+}
+
+/**
+ * Plukker mulige biografier: "Fornavn Etternavn" fra søkeresultat, ikke navneartikkel/disambig.
+ */
+function pickPersonTitlesFromSearch(theme, titles) {
+  const raw = String(theme ?? "").trim();
+  const themeNorm = normalizeLookupTitle(raw);
+  if (!themeNorm || !Array.isArray(titles)) {
+    return [];
+  }
+
+  const parenNoise =
+    /\(\s*(navn|album|film|filmer|sang|singel|bok|bøker|serie|tv|spill|lag|klubb|sted|by|kommune|fylke|land|planet|stjerne|dyr|plante)\s*\)/i;
+
+  const picked = [];
+  for (let i = 0; i < titles.length; i += 1) {
+    const title = titles[i];
+    const titleNorm = normalizeLookupTitle(title);
+    if (titleNorm === themeNorm || titleNorm.startsWith(`${themeNorm} (`)) {
+      continue;
+    }
+    if (!titleNorm.startsWith(`${themeNorm} `)) {
+      continue;
+    }
+    if (parenNoise.test(title)) {
+      continue;
+    }
+    const wordsInTitle = title.trim().split(/\s+/).filter(Boolean);
+    if (wordsInTitle.length < 2) {
+      continue;
+    }
+    if (normalizeLookupTitle(wordsInTitle[0]) !== themeNorm) {
+      continue;
+    }
+    const afterFirst = title.slice(wordsInTitle[0].length).trim();
+    if (!afterFirst || afterFirst.startsWith("(")) {
+      continue;
+    }
+    picked.push(title);
+    if (picked.length >= 3) {
+      break;
+    }
+  }
+  return [...new Set(picked)];
+}
+
+/**
+ * Biografiintro på bokmål har ofte fødselsår; krever dette for å unngå svake person-treff.
+ */
+function isUsablePersonBioExtract(extract) {
+  if (!isUsableLookupExtract(extract)) {
+    return false;
+  }
+  const t = String(extract);
+  if (/\b(født|fødd)\b/i.test(t)) {
+    return true;
+  }
+  if (/\b(18|19|20)\d{2}\b/.test(t)) {
+    return true;
+  }
+  return false;
 }
 
 async function fetchWikipediaExtracts(titles) {
@@ -450,30 +552,83 @@ function isUsableLookupExtract(extract) {
 
 async function buildWikipediaLookupContext(theme) {
   const titles = await searchWikipediaTitles(theme);
-  const pickedTitles = pickLookupTitles(theme, titles);
-  if (!pickedTitles.length) {
-    return { titles: [], context: "" };
+  const nameTitles = pickLookupTitles(theme, titles);
+  const personTitles = themeAllowsPersonArticleLookup(theme)
+    ? pickPersonTitlesFromSearch(theme, titles)
+    : [];
+
+  const fetchTitles = [...new Set([...nameTitles, ...personTitles])];
+  if (!fetchTitles.length) {
+    return {
+      titles: [],
+      nameTitles: [],
+      personTitles: [],
+      hasPersonContext: false,
+      context: "",
+    };
   }
 
-  const extracts = await fetchWikipediaExtracts(pickedTitles);
-  const entries = extracts
-    .filter((entry) => isUsableLookupExtract(entry.extract))
-    .map((entry) => `${entry.title}: ${trimLookupText(entry.extract)}`);
+  const extracts = await fetchWikipediaExtracts(fetchTitles);
+  const byTitle = new Map(
+    extracts.map((e) => [e.title, e])
+  );
 
-  if (!entries.length) {
-    return { titles: pickedTitles, context: "" };
+  const nameLines = [];
+  for (let i = 0; i < nameTitles.length; i += 1) {
+    const entry = byTitle.get(nameTitles[i]);
+    if (
+      entry &&
+      isUsableLookupExtract(entry.extract)
+    ) {
+      nameLines.push(
+        `${entry.title}: ${trimLookupText(entry.extract)}`
+      );
+    }
   }
+
+  const personLines = [];
+  for (let i = 0; i < personTitles.length; i += 1) {
+    const entry = byTitle.get(personTitles[i]);
+    if (
+      entry &&
+      isUsablePersonBioExtract(entry.extract)
+    ) {
+      personLines.push(
+        `${entry.title}: ${trimLookupText(entry.extract, 280)}`
+      );
+    }
+  }
+
+  const nameBlock =
+    nameLines.length > 0 ? `[NAVNEFAKTA]\n${nameLines.join("\n")}` : "";
+  const personBlock =
+    personLines.length > 0
+      ? `[PERSONER FRA OPPSLAG]\n${personLines.join("\n")}`
+      : "";
+
+  const context = [nameBlock, personBlock].filter(Boolean).join("\n\n");
+  const hasPersonContext = personLines.length > 0;
 
   return {
-    titles: pickedTitles,
-    context: entries.slice(0, 3).join("\n"),
+    titles: fetchTitles,
+    nameTitles,
+    personTitles,
+    hasPersonContext,
+    context,
   };
 }
 
 async function maybeBuildThemeLookupSupport(theme) {
   const vague = themeNeedsLookupSupport(theme);
   if (!vague) {
-    return { vague: false, titles: [], context: "" };
+    return {
+      vague: false,
+      titles: [],
+      nameTitles: [],
+      personTitles: [],
+      hasPersonContext: false,
+      context: "",
+    };
   }
 
   try {
@@ -481,11 +636,23 @@ async function maybeBuildThemeLookupSupport(theme) {
     return {
       vague: true,
       titles: Array.isArray(lookup?.titles) ? lookup.titles : [],
+      nameTitles: Array.isArray(lookup?.nameTitles) ? lookup.nameTitles : [],
+      personTitles: Array.isArray(lookup?.personTitles)
+        ? lookup.personTitles
+        : [],
+      hasPersonContext: Boolean(lookup?.hasPersonContext),
       context: typeof lookup?.context === "string" ? lookup.context : "",
     };
   } catch (err) {
     console.warn("Wikipedia lookup failed:", err.message);
-    return { vague: true, titles: [], context: "" };
+    return {
+      vague: true,
+      titles: [],
+      nameTitles: [],
+      personTitles: [],
+      hasPersonContext: false,
+      context: "",
+    };
   }
 }
 
@@ -510,6 +677,17 @@ Feltet "theme" i JSON-svaret skal være eksakt: ${themeJson}`;
 
 Temaet virker kort eller tvetydig. Bruk kun denne faktastøtten fra Wikipedia/MediaWiki hvis du trenger å konkretisere temaet:
 ${lookup.context}
+
+Struktur:
+- [NAVNEFAKTA]: trygg bakgrunn om navnet/ordet.
+- [PERSONER FRA OPPSLAG]: biografiske artikler som faktisk ble funnet i oppslaget.
+
+Du kan variere spørsmål mellom navnefakta (fra NAVNEFAKTA) og konkrete enkeltfakta om personer listet under PERSONER, men:
+- bruk KUN personer som er eksplisitt listet under [PERSONER FRA OPPSLAG]
+- lag KUN personspørsmål der én klar, dokumenterbar fasit står direkte i utdragene (for eksempel eksplisitt årstall, tydelig yrke/rolle som er entydig, eller annet som ikke kan tolkes flere veier)
+- ikke finn på biografiske detaljer, verk, hendelser eller kampanjer som ikke står i utdragene
+- ikke spør om "i hvilket land er navnet vanlig" eller lignende der flere svar kan være like riktige
+- hvis [PERSONER FRA OPPSLAG] mangler eller er for tynt til entydige spørsmål, hold deg til [NAVNEFAKTA] eller generelle trygge fakta
 
 Ikke finn på konkrete personer, verk, hendelser eller kampanjer utover det som følger tydelig av faktastøtten.
 Hvis faktastøtten ikke støtter en spesifikk retning, hold spørsmålene generelle, forsiktige og dokumenterbare.`;
@@ -537,7 +715,16 @@ async function generateQuizWithOpenAI(openai, model, theme, questionCount) {
   if (lookup.vague) {
     console.log(`[quiz lookup] titles=${JSON.stringify(lookup.titles || [])}`);
     console.log(
+      `[quiz lookup] nameTitles=${JSON.stringify(lookup.nameTitles || [])}`
+    );
+    console.log(
+      `[quiz lookup] personTitles=${JSON.stringify(lookup.personTitles || [])}`
+    );
+    console.log(
       `[quiz lookup] hasContext=${lookup.context ? "true" : "false"}`
+    );
+    console.log(
+      `[quiz lookup] hasPersonContext=${lookup.hasPersonContext ? "true" : "false"}`
     );
   }
   const userPrompt = buildQuizUserPrompt(theme, questionCount, lookup);
