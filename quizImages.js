@@ -112,14 +112,23 @@ function commonsCreditFromExtMetadata(extmetadata) {
  * @property {string} [pageUrl]
  */
 
+function logWikimedia(line) {
+  console.log(`[quiz image][wikimedia] ${line}`);
+}
+
 /**
  * Søk Wikimedia Commons (filer) og hent bilde-URL + metadata.
  */
 async function searchWikimediaImageCandidates(query, limit = 6) {
   const q = String(query ?? "").trim();
   if (!q || q.length < 2) {
+    logWikimedia(`query=${JSON.stringify(q)} rawResults=0 reason=emptyOrShortQuery`);
     return [];
   }
+
+  logWikimedia(
+    `query=${JSON.stringify(q)} api=${COMMONS_API} srnamespace=6 (File:)`
+  );
 
   const searchUrl = new URL(COMMONS_API);
   searchUrl.search = new URLSearchParams({
@@ -132,17 +141,53 @@ async function searchWikimediaImageCandidates(query, limit = 6) {
     origin: "*",
   }).toString();
 
-  const searchPayload = await fetchJsonWithTimeout(searchUrl);
+  let searchPayload;
+  try {
+    searchPayload = await fetchJsonWithTimeout(searchUrl);
+  } catch (e) {
+    logWikimedia(
+      `rawResults=0 reason=searchFetchError msg=${JSON.stringify(String(e?.message || e))}`
+    );
+    return [];
+  }
+
+  if (searchPayload?.error) {
+    logWikimedia(
+      `rawResults=0 reason=apiError code=${searchPayload.error.code ?? "?"} info=${JSON.stringify(String(searchPayload.error.info ?? ""))}`
+    );
+    return [];
+  }
+
   const results = Array.isArray(searchPayload?.query?.search)
     ? searchPayload.query.search
     : [];
+
+  const rawCount = results.length;
+  logWikimedia(`rawResults=${rawCount}`);
+
+  const sampleRaw = results
+    .slice(0, 3)
+    .map((row) => String(row?.title ?? "").trim())
+    .filter(Boolean);
+  if (sampleRaw.length) {
+    logWikimedia(`sampleRawTitles=${JSON.stringify(sampleRaw)}`);
+  }
 
   const titles = results
     .map((row) => String(row?.title ?? "").trim())
     .filter((t) => t && !/\.(svg|webm|ogv|ogg|pdf)$/i.test(t))
     .slice(0, limit);
 
+  logWikimedia(`afterExtensionFilter=${titles.length}`);
+
   if (!titles.length) {
+    if (rawCount > 0) {
+      logWikimedia(
+        "filteredResults=0 reason=noTitlesAfterExtensionOrEmptyTitles"
+      );
+    } else {
+      logWikimedia("filteredResults=0 reason=zeroSearchHits");
+    }
     return [];
   }
 
@@ -157,26 +202,54 @@ async function searchWikimediaImageCandidates(query, limit = 6) {
     origin: "*",
   }).toString();
 
-  const iiPayload = await fetchJsonWithTimeout(iiUrl);
+  let iiPayload;
+  try {
+    iiPayload = await fetchJsonWithTimeout(iiUrl);
+  } catch (e) {
+    logWikimedia(
+      `filteredResults=0 reason=imageinfoFetchError msg=${JSON.stringify(String(e?.message || e))}`
+    );
+    return [];
+  }
+
+  if (iiPayload?.error) {
+    logWikimedia(
+      `filteredResults=0 reason=imageinfoApiError code=${iiPayload.error.code ?? "?"}`
+    );
+    return [];
+  }
+
   const pages = Object.values(iiPayload?.query?.pages ?? {});
 
   /** @type {QuizImageCandidate[]} */
   const out = [];
+  let skipNotImage = 0;
+  let skipNoHttpsUrl = 0;
+  let skipNoCredit = 0;
+  let skipMissingImageinfo = 0;
+
   for (let i = 0; i < pages.length; i += 1) {
     const page = pages[i];
     const title = String(page?.title ?? "").trim();
     const ii = Array.isArray(page?.imageinfo) ? page.imageinfo[0] : null;
-    if (!ii || !ii.mime || !String(ii.mime).startsWith("image/")) {
+    if (!ii) {
+      skipMissingImageinfo += 1;
+      continue;
+    }
+    if (!ii.mime || !String(ii.mime).startsWith("image/")) {
+      skipNotImage += 1;
       continue;
     }
     const url =
       String(ii.thumburl || ii.url || "").trim() ||
       String(ii.url || "").trim();
     if (!url || !/^https:\/\//i.test(url)) {
+      skipNoHttpsUrl += 1;
       continue;
     }
     const credit = commonsCreditFromExtMetadata(ii.extmetadata);
     if (!credit) {
+      skipNoCredit += 1;
       continue;
     }
     const wikiTitle = title.replace(/ /g, "_");
@@ -196,7 +269,20 @@ async function searchWikimediaImageCandidates(query, limit = 6) {
     }
   }
 
+  logWikimedia(
+    `filteredResults=${out.length} skipNotImage=${skipNotImage} skipNoHttpsUrl=${skipNoHttpsUrl} skipNoCredit=${skipNoCredit} skipMissingImageinfo=${skipMissingImageinfo}`
+  );
+  if (out.length === 0 && titles.length > 0) {
+    logWikimedia(
+      "reason=allCandidatesDroppedInImageinfoLoop (see skip* counts)"
+    );
+  }
+
   return out;
+}
+
+function logPixabay(line) {
+  console.log(`[quiz image][pixabay] ${line}`);
 }
 
 /**
@@ -205,9 +291,18 @@ async function searchWikimediaImageCandidates(query, limit = 6) {
 async function searchPixabayImageCandidates(query, limit = 6) {
   const key = process.env.PIXABAY_API_KEY;
   const q = String(query ?? "").trim();
-  if (!key || !q || q.length < 2) {
+  if (!key) {
+    logPixabay(
+      `query=${JSON.stringify(q)} results=0 reason=no_PIXABAY_API_KEY`
+    );
     return [];
   }
+  if (!q || q.length < 2) {
+    logPixabay(`query=${JSON.stringify(q)} results=0 reason=emptyOrShortQuery`);
+    return [];
+  }
+
+  logPixabay(`query=${JSON.stringify(q)}`);
 
   const url = new URL(PIXABAY_API);
   url.search = new URLSearchParams({
@@ -219,8 +314,18 @@ async function searchPixabayImageCandidates(query, limit = 6) {
     lang: "no",
   }).toString();
 
-  const payload = await fetchJsonWithTimeout(url);
+  let payload;
+  try {
+    payload = await fetchJsonWithTimeout(url);
+  } catch (e) {
+    logPixabay(
+      `results=0 reason=fetchError msg=${JSON.stringify(String(e?.message || e))}`
+    );
+    return [];
+  }
+
   const hits = Array.isArray(payload?.hits) ? payload.hits : [];
+  logPixabay(`results=${hits.length}`);
 
   /** @type {QuizImageCandidate[]} */
   const out = [];
@@ -248,28 +353,48 @@ async function searchPixabayImageCandidates(query, limit = 6) {
     });
   }
 
+  logPixabay(`acceptedAfterFilter=${out.length}`);
   return out;
 }
 
 /**
- * Samler kandidater fra begge kilder (felles format).
+ * Henter Wikimedia først, deretter Pixabay (sekventielt — Pixabay som fallback etter Wikimedia).
  * @param {string} query
- * @returns {Promise<QuizImageCandidate[]>}
+ * @returns {Promise<{ wiki: QuizImageCandidate[], pix: QuizImageCandidate[] }>}
  */
-async function findImageCandidates(query) {
+async function fetchWikiThenPixCandidates(query) {
   const q = String(query ?? "")
     .trim()
     .replace(/\s+/g, " ")
     .slice(0, 120);
   if (!q || q.length < 2) {
-    return [];
+    logWikimedia(`query="" rawResults=0 reason=skippedShortQueryAtBatch`);
+    logPixabay(`query="" results=0 reason=skippedShortQueryAtBatch`);
+    return { wiki: [], pix: [] };
   }
 
-  const [wiki, pix] = await Promise.all([
-    searchWikimediaImageCandidates(q, 8).catch(() => []),
-    searchPixabayImageCandidates(q, 8).catch(() => []),
-  ]);
+  const wiki = await searchWikimediaImageCandidates(q, 8).catch((e) => {
+    logWikimedia(
+      `filteredResults=0 reason=unhandledError msg=${JSON.stringify(String(e?.message || e))}`
+    );
+    return [];
+  });
+  const pix = await searchPixabayImageCandidates(q, 8).catch((e) => {
+    logPixabay(
+      `results=0 reason=unhandledError msg=${JSON.stringify(String(e?.message || e))}`
+    );
+    return [];
+  });
+  return { wiki, pix };
+}
 
+/**
+ * Samler kandidater fra begge kilder (Wikimedia først i arrayet, deretter Pixabay).
+ * @param {string} query
+ * @returns {Promise<QuizImageCandidate[]>}
+ */
+async function findImageCandidates(query) {
+  const { wiki, pix } = await fetchWikiThenPixCandidates(query);
   return [...wiki, ...pix];
 }
 
@@ -471,13 +596,19 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
   const cohesive = isQuizCohesiveForSharedImage(theme, questions);
 
   if (cohesive && primaryQuery) {
-    const candidates = await findImageCandidates(primaryQuery);
-    const best = pickBestImageCandidate(candidates, {
-      theme,
-      questionText: "",
-    });
+    const { wiki, pix } = await fetchWikiThenPixCandidates(primaryQuery);
+    const best =
+      pickBestImageCandidate(wiki, {
+        theme,
+        questionText: "",
+      }) ||
+      pickBestImageCandidate(pix, {
+        theme,
+        questionText: "",
+      });
+    const candidatesCount = wiki.length + pix.length;
+    log(`chosenSource=${best ? best.source : "none"}`);
     if (best) {
-      log(`source=${best.source}`);
       log(`pickedTitle=${JSON.stringify(best.title)}`);
       log("mode=shared");
       const shared = {
@@ -496,7 +627,7 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
       });
       return { questions: withQ, sharedImage: shared };
     }
-    if (candidates.length > 0) {
+    if (candidatesCount > 0) {
       log("relevance=no candidate met minScore (shared)");
     }
     log("mode=none (cohesive, no acceptable shared hit)");
@@ -523,13 +654,19 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
       out.push(rest);
       continue;
     }
-    const candidates = await findImageCandidates(qry);
-    const best = pickBestImageCandidate(candidates, {
-      theme,
-      questionText: String(qq?.question ?? ""),
-    });
+    const { wiki, pix } = await fetchWikiThenPixCandidates(qry);
+    const best =
+      pickBestImageCandidate(wiki, {
+        theme,
+        questionText: String(qq?.question ?? ""),
+      }) ||
+      pickBestImageCandidate(pix, {
+        theme,
+        questionText: String(qq?.question ?? ""),
+      });
+    const candidatesCount = wiki.length + pix.length;
+    log(`chosenSource=${best ? best.source : "none"} questionIndex=${i}`);
     if (best) {
-      log(`source=${best.source} questionIndex=${i}`);
       log(`pickedTitle=${JSON.stringify(best.title)}`);
       out.push({
         ...qq,
@@ -544,7 +681,7 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
         },
       });
     } else {
-      if (candidates.length > 0) {
+      if (candidatesCount > 0) {
         log(`relevance=no candidate met minScore questionIndex=${i}`);
       }
       const { image, ...rest } = qq;
