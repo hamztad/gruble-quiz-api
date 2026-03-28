@@ -135,6 +135,10 @@ Distraktørene må:
 - være klart feil ved faktasjekk
 - ikke være tvetydige
 - ikke åpne for flere riktige svar
+- være balansert mot riktig svar i lengde, detaljnivå og språklig form
+- speile strukturen i riktig svar når svaret er spesifikt (for eksempel rolle + fagfelt + institusjon)
+- ikke være mye kortere, flatere eller mer generelle enn riktig svar
+- ikke gjøre riktig svar lett gjenkjennelig bare fordi det er mer presist formulert
 
 ---
 

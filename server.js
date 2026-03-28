@@ -1201,6 +1201,79 @@ function getQuestionContextValidationError(questionText) {
   return null;
 }
 
+/**
+ * Nytt: enkel kvalitetskontroll for å hindre at riktig svar skiller seg for mye ut
+ * i lengde/struktur sammenlignet med distraktørene.
+ */
+function getOptionBalanceProfile(optionText) {
+  const text = String(optionText ?? "").replace(/\s+/g, " ").trim();
+  const words = text ? text.split(" ").filter(Boolean) : [];
+  const longWords = text.match(/\b[\p{L}]{7,}\b/gu) || [];
+  const structureMarkers =
+    text.match(/\b(ved|fra|innen|under|mellom|omkring|knyttet til)\b/giu) || [];
+  const punctuationMarkers = text.match(/[,:();-]/g) || [];
+
+  return {
+    words: words.length,
+    longWords: longWords.length,
+    structureMarkers: structureMarkers.length,
+    punctuationMarkers: punctuationMarkers.length,
+    score:
+      words.length +
+      longWords.length +
+      structureMarkers.length +
+      Math.min(2, punctuationMarkers.length),
+  };
+}
+
+function getAnswerOptionBalanceValidationError(question) {
+  const answer = String(question?.answer ?? "").trim();
+  const options = Array.isArray(question?.options) ? question.options : [];
+  if (!answer || options.length !== 4) {
+    return null;
+  }
+
+  const distractors = options.filter((option) => String(option).trim() !== answer);
+  if (distractors.length !== 3) {
+    return null;
+  }
+
+  const answerProfile = getOptionBalanceProfile(answer);
+  const distractorProfiles = distractors.map(getOptionBalanceProfile);
+  const avgDistractorWords =
+    distractorProfiles.reduce((sum, item) => sum + item.words, 0) /
+    distractorProfiles.length;
+  const avgDistractorScore =
+    distractorProfiles.reduce((sum, item) => sum + item.score, 0) /
+    distractorProfiles.length;
+  const maxDistractorScore = Math.max(...distractorProfiles.map((item) => item.score));
+
+  const answerLooksSpecific =
+    answerProfile.words >= 5 ||
+    answerProfile.longWords >= 2 ||
+    answerProfile.structureMarkers >= 1 ||
+    answerProfile.punctuationMarkers >= 1;
+
+  if (
+    answerLooksSpecific &&
+    answerProfile.words >= avgDistractorWords + 3 &&
+    avgDistractorWords <= Math.max(3, answerProfile.words * 0.65)
+  ) {
+    return "answer option stands out too much in length";
+  }
+
+  if (
+    answerLooksSpecific &&
+    answerProfile.score >= maxDistractorScore + 4 &&
+    avgDistractorScore > 0 &&
+    answerProfile.score > avgDistractorScore * 1.6
+  ) {
+    return "answer option stands out too much in specificity";
+  }
+
+  return null;
+}
+
 function validateGeneratedQuiz(payload, expectedTheme, minQuestions = 3, maxQuestions = 5) {
   if (!payload || typeof payload !== "object") {
     return "Invalid payload";
@@ -1248,6 +1321,10 @@ function validateGeneratedQuiz(payload, expectedTheme, minQuestions = 3, maxQues
     }
     if (!q.options.includes(q.answer)) {
       return `question ${i} answer must match one of options`;
+    }
+    const optionBalanceError = getAnswerOptionBalanceValidationError(q);
+    if (optionBalanceError) {
+      return `question ${i} ${optionBalanceError}`;
     }
   }
   return null;
