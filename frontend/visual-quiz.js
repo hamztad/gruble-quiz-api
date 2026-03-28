@@ -1,6 +1,5 @@
 /**
- * Prototype: bilde-10-quiz (egen presentasjon, egen API-flyt).
- * Standard frontend (app.js / index.html) brukes uendret.
+ * Bilde-quiz (visual-10) — presentasjon. Standard app.js er uendret.
  */
 const API_BASE = "https://gruble-quiz-api.onrender.com";
 const QUIZ_VARIANT = "visual-10";
@@ -22,6 +21,13 @@ function escapeHtml(s) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function difficultyLabel(d) {
+  const x = String(d ?? "normal").toLowerCase();
+  if (x === "easy") return "Lett";
+  if (x === "hard") return "Vanskelig";
+  return "Normal";
 }
 
 function getQs(questionId) {
@@ -55,14 +61,48 @@ function shuffleQuizOptions(questions) {
   });
 }
 
+function totalSteps() {
+  return Math.max(state.questions.length, 1);
+}
+
+function progressPercent(idx) {
+  const n = totalSteps();
+  return Math.round(((idx + 1) / n) * 100);
+}
+
+function buildStepDots(currentIdx) {
+  const n = totalSteps();
+  const parts = [];
+  for (let i = 0; i < n; i += 1) {
+    const stepNum = i + 1;
+    const isFinale = i === n - 1;
+    const classes = ["vq-step"];
+    if (isFinale) {
+      classes.push("vq-step--finale");
+    }
+    if (i < currentIdx) {
+      classes.push("vq-step--done");
+    } else if (i === currentIdx) {
+      classes.push("vq-step--current");
+    }
+    parts.push(
+      `<li class="${classes.join(" ")}" title="Spørsmål ${stepNum}" aria-current="${
+        i === currentIdx ? "step" : "false"
+      }">${stepNum}</li>`
+    );
+  }
+  return `<ol class="vq-steps" aria-label="Fremdrift">${parts.join("")}</ol>`;
+}
+
 async function loadVisualQuiz() {
   const el = document.getElementById("visual-app");
-  el.innerHTML = "<p class=\"muted\">Laster bilde-quiz…</p>";
+  el.innerHTML =
+    "<p class=\"empty-state\"><span class=\"vq-spinner\" aria-hidden=\"true\"></span> Laster quiz…</p>";
   try {
     const response = await fetch(`${API_BASE}/api/quiz/visual-today`);
     if (!response.ok) {
       el.innerHTML =
-        "<p class=\"muted\">Ingen lagret bilde-quiz. Generer en først.</p>";
+        "<p class=\"empty-state\">Ingen lagret bilde-quiz ennå. Trykk «Start ny quiz» over.</p>";
       return false;
     }
     const data = await response.json();
@@ -83,7 +123,8 @@ async function loadVisualQuiz() {
     render();
     return true;
   } catch {
-    el.innerHTML = "<p>Kunne ikke laste bilde-quiz.</p>";
+    el.innerHTML =
+      "<p class=\"empty-state\">Kunne ikke koble til API. Sjekk nettverk eller API_BASE i scriptet.</p>";
     return false;
   }
 }
@@ -136,41 +177,49 @@ function render() {
   const el = document.getElementById("visual-app");
   if (!state.questions.length) {
     el.innerHTML =
-      "<p class=\"muted\">Ingen spørsmål. Bruk «Generer bilde-quiz» over.</p>";
+      "<p class=\"empty-state\">Ingen spørsmål lastet. Bruk knappene over.</p>";
     return;
   }
 
   const q = state.questions[state.currentIndex];
   const qs = getQs(q.id);
-  const isLast = state.currentIndex === state.questions.length - 1;
+  const idx = state.currentIndex;
+  const n = state.questions.length;
+  const isLast = idx === n - 1;
+  const isFinaleQuestion = q.imageQuestion === true || idx === n - 1;
   const img = state.sharedImage;
-  const imageTag =
+
+  const imageBlock =
     img && img.url
-      ? `<figure class="visual-quiz-figure">
+      ? `<figure class="vq-image-frame">
            <img src="${escapeHtml(img.url)}" alt="${escapeHtml(
-             img.title || "Illustrasjon"
-           )}" />
+             img.title || "Illustrasjon til quizen"
+           )}" loading="lazy" />
            <figcaption>${escapeHtml(img.credit || "")}</figcaption>
          </figure>`
-      : "<p class=\"muted\">(Mangler delt bilde i denne quizen)</p>";
+      : `<p class="vq-image-missing">Ingen delt bilde i denne quizen.</p>`;
 
-  const imageHint =
-    q.imageQuestion === true
-      ? "<p class=\"visual-quiz-meta\"><strong>Spørsmål om bildet</strong> (nr. 10)</p>"
-      : "";
+  const finaleHintClass =
+    isFinaleQuestion ? "vq-hint-finale vq-hint-finale--active" : "vq-hint-finale";
+  const finaleHintText = isFinaleQuestion
+    ? "Siste spørsmål — dette handler om bildet over."
+    : "Underveis: samme bilde hele veien. Til slutt kommer et eget spørsmål om bildet.";
 
   let optionsHtml = "";
   if (!qs.answered) {
     const busy = qs.mcSubmitting;
-    optionsHtml = `<div class="options">
+    const busyNote = busy
+      ? '<p class="vq-submitting" role="status"><span class="vq-spinner" aria-hidden="true"></span> Sender svar…</p>'
+      : "";
+    optionsHtml = `${busyNote}<div class="vq-options">
       ${q.options
         .map((opt) => {
           const removed = qs.removedOptions.includes(opt);
-          return `<button type="button" class="option-button ${
-            removed ? "option-removed" : ""
+          return `<button type="button" class="vq-option ${
+            removed ? "vq-option--removed" : ""
           }" data-answer="${escapeHtml(opt)}" ${
             removed || busy ? "disabled" : ""
-          }>${escapeHtml(opt)}</button>`;
+          }">${escapeHtml(opt)}</button>`;
         })
         .join("")}
     </div>`;
@@ -180,45 +229,79 @@ function render() {
   if (qs.lastFeedback) {
     if (qs.lastFeedback.networkError) {
       feedbackHtml =
-        "<p class=\"result wrong\">Nettverksfeil ved innsending.</p>";
+        '<p class="vq-feedback vq-feedback--bad">Nettverksfeil ved innsending.</p>';
     } else if (qs.lastFeedback.correct) {
-      feedbackHtml = `<p class="result correct">Riktig. +${escapeHtml(
+      feedbackHtml = `<p class="vq-feedback vq-feedback--ok">Riktig — +${escapeHtml(
         String(qs.lastFeedback.points ?? 0)
       )} poeng</p>`;
     } else {
       feedbackHtml =
-        "<p class=\"result wrong\">Feil — prøv et annet alternativ.</p>";
+        '<p class="vq-feedback vq-feedback--bad">Ikke riktig — velg et annet alternativ.</p>';
     }
   }
 
+  const kickerClass = isFinaleQuestion
+    ? "vq-question-kicker vq-question-kicker--finale"
+    : "vq-question-kicker";
+  const kickerText = isFinaleQuestion ? "Bilde-spørsmål" : "Flervalgsoppgave";
+
   el.innerHTML = `
-    <div class="toolbar">
-      <span class="score-pill">Total: ${state.totalScore} poeng</span>
-      <button type="button" class="ghost" id="visual-reload">Last på nytt</button>
-    </div>
-    <p><strong>Tema:</strong> ${escapeHtml(state.theme)} · <strong>Vanskegrad:</strong> ${escapeHtml(
-      state.difficulty
-    )}</p>
-    ${imageTag}
-    <span class="question-number">Spørsmål ${state.currentIndex + 1} av ${
-      state.questions.length
-    }</span>
-    ${imageHint}
-    <h2>${escapeHtml(q.question)}</h2>
-    ${optionsHtml}
-    <div class="footer">
-      <span class="muted">Velg svar for å gå videre.</span>
-      <button type="button" id="visual-next" class="primary" ${
-        qs.answered ? "" : "disabled"
-      }>${isLast && qs.answered ? "Ferdig" : "Neste"}</button>
-    </div>
-    ${feedbackHtml}
+    <section class="vq-play">
+      <header class="vq-play__header">
+        <div class="vq-pills">
+          <span class="vq-pill">${escapeHtml(state.theme)}</span>
+          <span class="vq-pill">${escapeHtml(difficultyLabel(state.difficulty))}</span>
+          <span class="vq-pill vq-pill--score">${state.totalScore} poeng</span>
+        </div>
+        <button type="button" class="vq-btn-ghost" id="visual-reload">Start på nytt</button>
+      </header>
+
+      <div class="vq-progress-block">
+        <div class="vq-progress-label">
+          <span>Spørsmål <strong>${idx + 1}</strong> av ${n}</span>
+          <span>${progressPercent(idx)} %</span>
+        </div>
+        <div class="vq-progress-bar-wrap" aria-hidden="true">
+          <div class="vq-progress-bar" style="width:${progressPercent(idx)}%"></div>
+        </div>
+        ${buildStepDots(idx)}
+      </div>
+
+      <p class="${finaleHintClass}" role="status">${escapeHtml(finaleHintText)}</p>
+
+      <div class="vq-image-wrap">${imageBlock}</div>
+
+      <div class="vq-question-block">
+        <span class="${kickerClass}">${escapeHtml(kickerText)}</span>
+        <h2 class="vq-question-title">${escapeHtml(q.question)}</h2>
+        ${feedbackHtml}
+        ${optionsHtml}
+        <footer class="vq-footer">
+          <p class="vq-footer-hint">${
+            qs.answered
+              ? isLast
+                ? "Trykk «Se resultat» for å avslutte."
+                : "Gå videre til neste spørsmål."
+              : "Velg det svaret du mener er riktig."
+          }</p>
+          <button type="button" class="vq-btn-next" id="visual-next" ${
+            qs.answered ? "" : "disabled"
+          }>${isLast && qs.answered ? "Se resultat" : "Neste spørsmål"}</button>
+        </footer>
+      </div>
+    </section>
   `;
 
-  document.getElementById("visual-reload")?.addEventListener("click", loadVisualQuiz);
+  document.getElementById("visual-reload")?.addEventListener("click", () => {
+    state.questions = [];
+    state.currentIndex = 0;
+    el.innerHTML =
+      "<p class=\"empty-state\">Velg «Start ny quiz» eller «Last siste bilde-quiz».</p>";
+    document.getElementById("visual-generate-status").textContent = "";
+  });
 
   if (!qs.answered && !qs.mcSubmitting) {
-    el.querySelectorAll(".option-button:not(:disabled)").forEach((btn) => {
+    el.querySelectorAll(".vq-option:not(:disabled)").forEach((btn) => {
       btn.addEventListener("click", () =>
         submitMc(q, btn.getAttribute("data-answer"), qs)
       );
@@ -231,14 +314,23 @@ function render() {
     }
     if (isLast) {
       el.innerHTML = `
-        <div class="toolbar">
-          <span class="score-pill">Total: ${state.totalScore} poeng</span>
-          <button type="button" class="ghost" id="visual-reload-end">Last på nytt</button>
-        </div>
-        <h2>Ferdig</h2>
-        <p>Du endte med <strong>${state.totalScore}</strong> poeng.</p>
-        <p class="muted">Variant: ${escapeHtml(state.variant || QUIZ_VARIANT)}</p>
+        <section class="vq-play">
+          <div class="vq-end">
+            <div class="vq-end__icon" aria-hidden="true">✓</div>
+            <h2 class="vq-end__title">Quizen er ferdig</h2>
+            <p class="vq-end__score">Du endte med <strong>${state.totalScore}</strong> poeng totalt.</p>
+            <div class="vq-end__actions">
+              <button type="button" class="vq-btn-primary" id="visual-play-again">Ny runde</button>
+              <button type="button" class="vq-btn-ghost" id="visual-reload-end">Bare last inn på nytt</button>
+            </div>
+          </div>
+        </section>
       `;
+      document
+        .getElementById("visual-play-again")
+        ?.addEventListener("click", () => {
+          document.getElementById("visual-generate-button")?.click();
+        });
       document
         .getElementById("visual-reload-end")
         ?.addEventListener("click", loadVisualQuiz);
@@ -254,14 +346,15 @@ async function generateVisualQuiz() {
   const statusEl = document.getElementById("visual-generate-status");
   const themeInput = document.getElementById("visual-theme-input");
   const theme = (themeInput?.value ?? "").trim() || "Diverse";
-  const subjectMode = Boolean(document.getElementById("visual-subject-mode")?.checked);
+  const subjectMode = Boolean(
+    document.getElementById("visual-subject-mode")?.checked
+  );
   const diffEl = document.getElementById("visual-difficulty");
   const dr = String(diffEl?.value ?? "normal").toLowerCase();
-  const difficulty =
-    dr === "easy" || dr === "hard" ? dr : "normal";
+  const difficulty = dr === "easy" || dr === "hard" ? dr : "normal";
 
   btn.disabled = true;
-  statusEl.textContent = "Genererer…";
+  statusEl.innerHTML = '<span class="vq-spinner" aria-hidden="true"></span> Genererer quiz…';
   try {
     const res = await fetch(`${API_BASE}/api/internal/generate-visual-10-quiz`, {
       method: "POST",
@@ -274,7 +367,7 @@ async function generateVisualQuiz() {
         typeof body.error === "string" ? body.error : res.statusText
       );
     }
-    statusEl.textContent = "Laster inn…";
+    statusEl.textContent = "Laster inn quiz…";
     await loadVisualQuiz();
     statusEl.textContent = "";
   } catch (e) {
@@ -288,3 +381,9 @@ async function generateVisualQuiz() {
 document
   .getElementById("visual-generate-button")
   ?.addEventListener("click", generateVisualQuiz);
+
+document.getElementById("visual-load-button")?.addEventListener("click", () => {
+  const statusEl = document.getElementById("visual-generate-status");
+  statusEl.textContent = "";
+  loadVisualQuiz();
+});
