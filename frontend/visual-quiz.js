@@ -1,7 +1,7 @@
 /**
  * Bilde-quiz (visual-10) — presentasjon. Standard app.js er uendret.
  */
-const API_BASE = window.location.origin;
+const API_BASE = "https://gruble-quiz-api.onrender.com";
 const QUIZ_VARIANT = "visual-10";
 const QUESTION_COUNT = 10;
 

@@ -1595,7 +1595,7 @@ Returner KUN JSON med "theme" og "questions".`;
  * Bilde-10-variant: 9 spørsmål fra grunnmotor + delt bilde + ett bildeklimaks-spørsmål.
  * Grunnmotoren (generateQuizWithOpenAI) endres ikke; dette er en tynn wrapper.
  */
-async function generateVisualTenQuizWithOpenAI(
+async function buildVisualTenQuizAttempt(
   openai,
   model,
   theme,
@@ -1618,7 +1618,7 @@ async function generateVisualTenQuizWithOpenAI(
     ? getEmptyThemeLookupSupport()
     : await maybeBuildThemeLookupSupport(theme);
 
-  const nineClean = ninePack.questions.map((q) => {
+  let nineClean = ninePack.questions.map((q) => {
     const { image, ...rest } = q;
     return rest;
   });
@@ -1691,6 +1691,45 @@ async function generateVisualTenQuizWithOpenAI(
     sharedImage: shared,
     variant: VISUAL_TEN_QUIZ_VARIANT,
   };
+}
+
+async function generateVisualTenQuizWithOpenAI(
+  openai,
+  model,
+  theme,
+  memoryOptions = null,
+  subjectMode = false,
+  difficulty = "easy"
+) {
+  let lastErr = null;
+  const maxAttempts = 3;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      if (attempt > 0) {
+        console.log(
+          `[visual-10] retrying full generation attempt=${attempt + 1}/${maxAttempts}`
+        );
+      }
+      return await buildVisualTenQuizAttempt(
+        openai,
+        model,
+        theme,
+        memoryOptions,
+        subjectMode,
+        difficulty
+      );
+    } catch (err) {
+      lastErr = err;
+      console.log(
+        `[visual-10] attempt=${attempt + 1}/${maxAttempts} failed=${
+          err && typeof err.message === "string" ? err.message : String(err)
+        }`
+      );
+    }
+  }
+
+  throw lastErr || new Error("Could not generate visual-10 quiz");
 }
 
 app.get("/api/quiz/today", async (_req, res) => {
