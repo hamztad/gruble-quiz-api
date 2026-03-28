@@ -284,9 +284,214 @@ function pickQuestionFromBody(body, questions) {
   );
 }
 
-async function generateQuizWithOpenAI(openai, model, theme, questionCount) {
+/**
+ * Korte eller tvetydige tema er mer utsatt for hallusinasjoner.
+ * Denne heuristikken er bevisst enkel og heller mot oppslag for korte tema.
+ */
+function themeNeedsLookupSupport(theme) {
+  const raw = String(theme ?? "").trim();
+  if (!raw || /\d/.test(raw)) {
+    return false;
+  }
+
+  const lower = raw.toLowerCase();
+  const words = raw.split(/\s+/).filter(Boolean);
+  const broadMarkers = [
+    "historie",
+    "geografi",
+    "musikk",
+    "kunst",
+    "film",
+    "filmer",
+    "sport",
+    "vitenskap",
+    "teknologi",
+    "litteratur",
+    "språk",
+    "dyr",
+    "land",
+    "byer",
+    "matematikk",
+    "fysikk",
+    "kjemi",
+    "biologi",
+    "religion",
+    "mytologi",
+    "politikk",
+  ];
+  if (broadMarkers.some((marker) => lower.includes(marker))) {
+    return false;
+  }
+
+  if (words.length === 1) {
+    return raw.length <= 24;
+  }
+
+  if (words.length === 2) {
+    return words.every((word) => word.length <= 14) && !/[,:;()/]/.test(raw);
+  }
+
+  return false;
+}
+
+function normalizeLookupTitle(value) {
+  return String(value ?? "")
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function trimLookupText(text, maxLength = 240) {
+  const raw = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (raw.length <= maxLength) {
+    return raw;
+  }
+  const clipped = raw.slice(0, maxLength);
+  const lastSpace = clipped.lastIndexOf(" ");
+  return `${(lastSpace > 80 ? clipped.slice(0, lastSpace) : clipped).trim()}...`;
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs = 5000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "gruble-quiz-api/0.1",
+        Accept: "application/json",
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`Lookup failed with status ${response.status}`);
+    }
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function searchWikipediaTitles(theme) {
+  const url = new URL("https://nb.wikipedia.org/w/api.php");
+  url.search = new URLSearchParams({
+    action: "query",
+    list: "search",
+    srsearch: theme,
+    srlimit: "6",
+    utf8: "1",
+    format: "json",
+  }).toString();
+
+  const payload = await fetchJsonWithTimeout(url);
+  const rows = Array.isArray(payload?.query?.search) ? payload.query.search : [];
+  return rows
+    .map((row) => String(row?.title ?? "").trim())
+    .filter(Boolean);
+}
+
+function pickLookupTitles(theme, titles) {
+  const themeNorm = normalizeLookupTitle(theme);
+  const picked = [];
+  for (let i = 0; i < titles.length; i += 1) {
+    const title = titles[i];
+    const titleNorm = normalizeLookupTitle(title);
+    if (
+      titleNorm === themeNorm ||
+      titleNorm.startsWith(`${themeNorm} (`)
+    ) {
+      picked.push(title);
+    }
+  }
+  return [...new Set(picked)].slice(0, 3);
+}
+
+async function fetchWikipediaExtracts(titles) {
+  if (!titles.length) {
+    return [];
+  }
+
+  const url = new URL("https://nb.wikipedia.org/w/api.php");
+  url.search = new URLSearchParams({
+    action: "query",
+    prop: "extracts",
+    exintro: "1",
+    explaintext: "1",
+    redirects: "1",
+    titles: titles.join("|"),
+    utf8: "1",
+    format: "json",
+  }).toString();
+
+  const payload = await fetchJsonWithTimeout(url);
+  const pages = Object.values(payload?.query?.pages ?? {});
+  return pages
+    .map((page) => ({
+      title: String(page?.title ?? "").trim(),
+      extract: String(page?.extract ?? "").trim(),
+    }))
+    .filter((page) => page.title && page.extract);
+}
+
+function isUsableLookupExtract(extract) {
+  const lower = String(extract ?? "").toLowerCase();
+  if (!lower || lower.length < 40) {
+    return false;
+  }
+  if (
+    lower.includes("kan vise til") ||
+    lower.includes("pekerside") ||
+    lower.includes("flere betydninger")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+async function buildWikipediaLookupContext(theme) {
+  const titles = await searchWikipediaTitles(theme);
+  const pickedTitles = pickLookupTitles(theme, titles);
+  if (!pickedTitles.length) {
+    return { titles: [], context: "" };
+  }
+
+  const extracts = await fetchWikipediaExtracts(pickedTitles);
+  const entries = extracts
+    .filter((entry) => isUsableLookupExtract(entry.extract))
+    .map((entry) => `${entry.title}: ${trimLookupText(entry.extract)}`);
+
+  if (!entries.length) {
+    return { titles: pickedTitles, context: "" };
+  }
+
+  return {
+    titles: pickedTitles,
+    context: entries.slice(0, 3).join("\n"),
+  };
+}
+
+async function maybeBuildThemeLookupSupport(theme) {
+  const vague = themeNeedsLookupSupport(theme);
+  if (!vague) {
+    return { vague: false, titles: [], context: "" };
+  }
+
+  try {
+    const lookup = await buildWikipediaLookupContext(theme);
+    return {
+      vague: true,
+      titles: Array.isArray(lookup?.titles) ? lookup.titles : [],
+      context: typeof lookup?.context === "string" ? lookup.context : "",
+    };
+  } catch (err) {
+    console.warn("Wikipedia lookup failed:", err.message);
+    return { vague: true, titles: [], context: "" };
+  }
+}
+
+function buildQuizUserPrompt(theme, questionCount, lookup) {
   const themeJson = JSON.stringify(theme);
-  const userPrompt = `Generer ${questionCount} enkle flervalgsoppgaver på norsk om temaet: ${themeJson}.
+  let prompt = `Generer ${questionCount} enkle flervalgsoppgaver på norsk om temaet: ${themeJson}.
 
 Spørsmålene må være selvstendige.
 Brukeren skal kunne forstå og besvare hvert spørsmål uten artikkel, ingress, tekstutdrag eller annen skjult kontekst.
@@ -298,10 +503,47 @@ Hvert element i "questions" skal ha:
 - options: nøyaktig 4 strenger (ett riktig svar, tre plausibel feil)
 - answer: eksakt lik én av strengene i options
 
-Feltet "theme" i JSON-svaret skal være eksakt: ${themeJson}
+Feltet "theme" i JSON-svaret skal være eksakt: ${themeJson}`;
+
+  if (lookup?.context) {
+    prompt += `
+
+Temaet virker kort eller tvetydig. Bruk kun denne faktastøtten fra Wikipedia/MediaWiki hvis du trenger å konkretisere temaet:
+${lookup.context}
+
+Ikke finn på konkrete personer, verk, hendelser eller kampanjer utover det som følger tydelig av faktastøtten.
+Hvis faktastøtten ikke støtter en spesifikk retning, hold spørsmålene generelle, forsiktige og dokumenterbare.`;
+  } else if (lookup?.vague) {
+    prompt += `
+
+Temaet virker kort eller tvetydig, og oppslag ga ikke trygg nok faktastøtte.
+Ikke lag spørsmål om konkrete personer, hendelser, verk, TV-serier eller kampanjer.
+Bruk bare generelle og dokumenterbare fakta som kan forsvares direkte ut fra temaet.`;
+  }
+
+  prompt += `
 
 Returner KUN JSON med denne formen (ingen markdown):
 {"theme":...,"questions":[...]}`;
+
+  return prompt;
+}
+
+async function generateQuizWithOpenAI(openai, model, theme, questionCount) {
+  // Nytt: korte/tvetydige tema får et forsiktig oppslag mot Wikipedia før modellkallet.
+  const lookup = await maybeBuildThemeLookupSupport(theme);
+  console.log(`[quiz lookup] theme=${JSON.stringify(theme)}`);
+  console.log(`[quiz lookup] vague=${lookup.vague ? "true" : "false"}`);
+  if (lookup.vague) {
+    console.log(`[quiz lookup] titles=${JSON.stringify(lookup.titles || [])}`);
+    console.log(
+      `[quiz lookup] hasContext=${lookup.context ? "true" : "false"}`
+    );
+  }
+  const userPrompt = buildQuizUserPrompt(theme, questionCount, lookup);
+  console.log(
+    `[quiz lookup] promptHasLookupContext=${lookup.context ? "true" : "false"}`
+  );
 
   let lastValidationError = null;
 
