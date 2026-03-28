@@ -12,6 +12,11 @@ const {
   normalizeQuizQuestionsFromDb,
   serializeQuizForStorage,
 } = require("./quizImages");
+const {
+  QUIZ_MEMORY_MODE,
+  filterQuizQuestionsAgainstMemory,
+  insertQuizQuestionMemoryRows,
+} = require("./quizMemory");
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -82,6 +87,21 @@ async function setupTestTable() {
         questions JSONB,
         created_at TIMESTAMP DEFAULT NOW()
       )
+    `);
+    /* Nytt: minne for duplikatkontroll av spørsmålstekster (første versjon). */
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS quiz_question_memory (
+        id SERIAL PRIMARY KEY,
+        theme_normalized TEXT NOT NULL DEFAULT '',
+        question_original TEXT NOT NULL,
+        question_normalized TEXT NOT NULL,
+        quiz_source TEXT NOT NULL DEFAULT 'custom',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_quiz_question_memory_created
+      ON quiz_question_memory (created_at DESC)
     `);
     await pool.query("INSERT INTO test (message) VALUES ($1)", [
       "Hello from Gruble",
@@ -853,7 +873,20 @@ Returner KUN JSON med denne formen (ingen markdown):
   return prompt;
 }
 
-async function generateQuizWithOpenAI(openai, model, theme, questionCount) {
+/**
+ * @typedef {{ pool: import("pg").Pool, mode?: "daily"|"custom" }} QuizMemoryOptions
+ */
+
+/**
+ * Genererer quiz via OpenAI. memoryOptions er valgfritt: spørsmålsminne / duplikatfilter mot Postgres.
+ */
+async function generateQuizWithOpenAI(
+  openai,
+  model,
+  theme,
+  questionCount,
+  memoryOptions = null
+) {
   // Nytt: korte/tvetydige tema får et forsiktig oppslag mot Wikipedia før modellkallet.
   const lookup = await maybeBuildThemeLookupSupport(theme);
   console.log(`[quiz lookup] theme=${JSON.stringify(theme)}`);
@@ -911,13 +944,52 @@ async function generateQuizWithOpenAI(openai, model, theme, questionCount) {
     }
 
     const shuffled = parsed.questions.map(shuffleQuestionOptions);
-    let finalQuestions = shuffled;
+    let workingQuestions = shuffled;
+
+    if (
+      memoryOptions &&
+      memoryOptions.pool &&
+      typeof memoryOptions.pool.query === "function"
+    ) {
+      const memMode =
+        memoryOptions.mode === QUIZ_MEMORY_MODE.DAILY
+          ? QUIZ_MEMORY_MODE.DAILY
+          : QUIZ_MEMORY_MODE.CUSTOM;
+      const memResult = await filterQuizQuestionsAgainstMemory(
+        memoryOptions.pool,
+        workingQuestions,
+        theme,
+        memMode
+      );
+      workingQuestions = memResult.questions;
+      if (workingQuestions.length === 0) {
+        lastValidationError =
+          "all questions rejected as duplicates (quiz memory)";
+        continue;
+      }
+      workingQuestions = workingQuestions.map((q, idx) => ({
+        ...q,
+        id: idx + 1,
+      }));
+      const afterMemError = validateGeneratedQuiz(
+        { ...parsed, questions: workingQuestions },
+        theme,
+        workingQuestions.length,
+        workingQuestions.length
+      );
+      if (afterMemError) {
+        lastValidationError = afterMemError;
+        continue;
+      }
+    }
+
+    let finalQuestions = workingQuestions;
     let sharedImage = null;
     try {
       const decorated = await attachDecorativeQuizImages(
         theme,
         lookup,
-        shuffled
+        workingQuestions
       );
       finalQuestions = decorated.questions;
       sharedImage = decorated.sharedImage;
@@ -1452,10 +1524,19 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
   const openai = new OpenAI({ apiKey });
   const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
+  const quizSourceRaw =
+    typeof req.body?.quizSource === "string"
+      ? req.body.quizSource.trim().toLowerCase()
+      : typeof req.body?.source === "string"
+        ? req.body.source.trim().toLowerCase()
+        : "";
+  const memoryMode =
+    quizSourceRaw === QUIZ_MEMORY_MODE.DAILY
+      ? QUIZ_MEMORY_MODE.DAILY
+      : QUIZ_MEMORY_MODE.CUSTOM;
+
   try {
     const questionCount = 5;
-    const parsed = await generateQuizWithOpenAI(openai, model, theme, questionCount);
-
     const databaseUrl = process.env.DATABASE_URL;
     if (!databaseUrl) {
       res.status(500).json({ error: "DATABASE_URL is not set" });
@@ -1470,15 +1551,36 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
           : undefined,
     });
 
+    let parsed;
     try {
-      await pool.query(
+      parsed = await generateQuizWithOpenAI(openai, model, theme, questionCount, {
+        pool,
+        mode: memoryMode,
+      });
+    } catch (genErr) {
+      await pool.end().catch(() => {});
+      throw genErr;
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
         "INSERT INTO quizzes (theme, questions) VALUES ($1, $2::jsonb)",
         [
           parsed.theme.trim(),
           serializeQuizForStorage(parsed.sharedImage ?? null, parsed.questions),
         ]
       );
+      await insertQuizQuestionMemoryRows(
+        client,
+        parsed.theme,
+        parsed.questions,
+        memoryMode
+      );
+      await client.query("COMMIT");
     } catch (dbErr) {
+      await client.query("ROLLBACK").catch(() => {});
       const dbMessage =
         dbErr && typeof dbErr.message === "string"
           ? dbErr.message
@@ -1486,6 +1588,7 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
       res.status(500).json({ error: dbMessage });
       return;
     } finally {
+      client.release();
       await pool.end().catch(() => {});
     }
 
@@ -1603,8 +1706,27 @@ app.post("/api/quiz/check-question", async (req, res) => {
   }
 
   let replacementQuestion;
+  let replacementMemoryPool = null;
   try {
-    const replacementQuiz = await generateQuizWithOpenAI(openai, model, themeText, 1);
+    const dbUrl = process.env.DATABASE_URL;
+    if (dbUrl) {
+      replacementMemoryPool = new Pool({
+        connectionString: dbUrl,
+        ssl:
+          process.env.NODE_ENV === "production"
+            ? { rejectUnauthorized: false }
+            : undefined,
+      });
+    }
+    const replacementQuiz = await generateQuizWithOpenAI(
+      openai,
+      model,
+      themeText,
+      1,
+      replacementMemoryPool
+        ? { pool: replacementMemoryPool, mode: QUIZ_MEMORY_MODE.CUSTOM }
+        : null
+    );
     replacementQuestion = replacementQuiz.questions[0];
     if (replacementQuestion && Number.isFinite(Number(questionId))) {
       replacementQuestion = {
@@ -1619,6 +1741,10 @@ app.post("/api/quiz/check-question", async (req, res) => {
         : "Failed to generate replacement question";
     res.status(502).json({ error: message });
     return;
+  } finally {
+    if (replacementMemoryPool) {
+      await replacementMemoryPool.end().catch(() => {});
+    }
   }
 
   res.status(200).json({
