@@ -749,8 +749,9 @@ function isWeakThemeLookupContext(lookup) {
   return !String(lookup?.context ?? "").trim();
 }
 
-async function maybeBuildThemeLookupSupport(theme) {
-  const emptyLookup = {
+/** Nytt: felles tom lookup-struktur, også brukt når fagmodus bevisst hopper over oppslag. */
+function getEmptyThemeLookupSupport() {
+  return {
     vague: false,
     titles: [],
     nameTitles: [],
@@ -760,6 +761,10 @@ async function maybeBuildThemeLookupSupport(theme) {
     split: false,
     splitParts: [],
   };
+}
+
+async function maybeBuildThemeLookupSupport(theme) {
+  const emptyLookup = getEmptyThemeLookupSupport();
 
   const vague = themeNeedsLookupSupport(theme);
   if (!vague) {
@@ -820,7 +825,15 @@ async function maybeBuildThemeLookupSupport(theme) {
  */
 function buildQuizUserPrompt(theme, questionCount, lookup, subjectMode = false) {
   const themeJson = JSON.stringify(theme);
-  let prompt = `Generer ${questionCount} enkle flervalgsoppgaver på norsk om temaet: ${themeJson}.
+  let prompt = `Generer ${questionCount} enkle flervalgsoppgaver på norsk om temaet: ${themeJson}.`;
+
+  if (subjectMode) {
+    prompt += `
+
+Temaet skal her forstås som et skolefag eller undervisningsemne. Hvis temaet er "norsk", betyr det skolefaget norsk. Hvis temaet er "engelsk", betyr det skolefaget engelsk. Hvis temaet er "historie", "samfunnsfag", "matematikk" eller lignende, betyr det faget slik det brukes i skolen.`;
+  }
+
+  prompt += `
 
 Spørsmålene må være selvstendige.
 Brukeren skal kunne forstå og besvare hvert spørsmål uten artikkel, ingress, tekstutdrag eller annen skjult kontekst.
@@ -908,9 +921,15 @@ async function generateQuizWithOpenAI(
   memoryOptions = null,
   subjectMode = false
 ) {
-  // Nytt: korte/tvetydige tema får et forsiktig oppslag mot Wikipedia før modellkallet.
-  const lookup = await maybeBuildThemeLookupSupport(theme);
   console.log(`[quiz mode] subjectMode=${subjectMode ? "true" : "false"}`);
+  /* Nytt: i fagmodus hopper vi over lookup for å unngå at tvetydige ord som "norsk"
+     blir låst til oppslagsbetydning (ord/språk) i stedet for skolefag. */
+  const lookup = subjectMode
+    ? getEmptyThemeLookupSupport()
+    : await maybeBuildThemeLookupSupport(theme);
+  console.log(
+    `[quiz mode] lookupMode=${subjectMode ? "skipped_for_subject_mode" : "normal"}`
+  );
   console.log(`[quiz lookup] theme=${JSON.stringify(theme)}`);
   console.log(`[quiz lookup] vague=${lookup.vague ? "true" : "false"}`);
   if (lookup.vague) {
