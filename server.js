@@ -964,15 +964,15 @@ function buildQuizUserPrompt(
 Allerede godkjente spørsmål (ikke gjenta, ikke kopier samme faktum eller nær identisk formulering):
 ${lines}
 
-Generer nøyaktig ${need} NYE flervalgsoppgaver. Listen "questions" i JSON skal ha nøyaktig ${need} elementer — ikke færre, ikke flere. Målet er ${questionCount} spørsmål totalt når disse legges til listen over.`;
+Generer ${need} NYE flervalgsoppgaver. Målet er at listen "questions" i JSON har nøyaktig ${need} elementer. Når disse legges til listen over, skal quizen totalt nå ${questionCount} spørsmål.`;
   } else {
-    prompt = `Generer nøyaktig ${need} enkle flervalgsoppgaver på norsk om temaet: ${themeJson}.
-Listen "questions" i JSON skal ha nøyaktig ${need} elementer — ikke færre, ikke flere.`;
+    prompt = `Generer ${need} enkle flervalgsoppgaver på norsk om temaet: ${themeJson}.
+Målet er at listen "questions" i JSON har nøyaktig ${need} elementer.`;
   }
 
   prompt += `
 
-Bruk bare trygg kunnskap eller eksplisitt faktastøtte i denne samtalen — ikke gjettverk eller oppdiktede synonymer. Ved trangt tema: utvid forsiktig til nærliggende undertema i samme fagområde og lever fortsatt nøyaktig ${need} gyldige spørsmål i dette JSON-svaret.`;
+Bruk bare trygg kunnskap eller eksplisitt faktastøtte i denne samtalen — ikke gjettverk eller oppdiktede synonymer. Ved trangt tema: utvid forsiktig til nærliggende undertema i samme fagområde og strev mot nøyaktig ${need} gyldige spørsmål i dette JSON-svaret (ikke finn på fakta for å fylle ut).`;
 
   if (subjectMode) {
     prompt += `
@@ -1072,7 +1072,7 @@ Hvis du er i tvil om spørsmålet kan ha flere riktige fritekstsvar, skal du for
 
   prompt += `
 
-Returner KUN JSON med denne formen (ingen markdown). "questions" skal ha nøyaktig ${need} elementer:
+Returner KUN JSON med denne formen (ingen markdown). "questions" skal sikte mot nøyaktig ${need} elementer:
 {"theme":...,"questions":[...]}`;
 
   return prompt;
@@ -1671,12 +1671,12 @@ function getVagueQuestionValidationError(questionText) {
   }
 
   if (
-    /\b(kjent for|ofte brukt|ofte regnet som|mange mener|anses som)\b/i.test(text)
+    /\b(kjent for|ofte regnet som|mange mener|anses som)\b/i.test(text)
   ) {
     return "must not use vague reputation-based phrasing";
   }
 
-  if (/\b(populær|populaere?|mest populære)\b/i.test(text)) {
+  if (/\b(mest populære|populært\s+blant)\b/i.test(text)) {
     return "must not use popularity-based phrasing";
   }
 

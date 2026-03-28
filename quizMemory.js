@@ -163,13 +163,13 @@ function normalizedQuestionsTooSimilar(normA, normB, mode) {
   const levRatio = 1 - dist / maxLen;
 
   if (mode === QUIZ_MEMORY_MODE.DAILY) {
-    if (levRatio >= 0.87) {
+    if (levRatio >= 0.9) {
       return true;
     }
     const j = tokenJaccardSimilarity(normA, normB);
     const wordsA = tokenSetForOverlap(normA).length;
     const wordsB = tokenSetForOverlap(normB).length;
-    if (wordsA >= 5 && wordsB >= 5 && j >= 0.9) {
+    if (wordsA >= 5 && wordsB >= 5 && j >= 0.92) {
       return true;
     }
     return false;
@@ -204,7 +204,7 @@ function normalizedAnswersTooSimilar(normA, normB, mode) {
   const levRatio = 1 - dist / ml;
 
   if (mode === QUIZ_MEMORY_MODE.DAILY) {
-    return levRatio >= 0.88;
+    return levRatio >= 0.9;
   }
   return levRatio >= 0.94;
 }
