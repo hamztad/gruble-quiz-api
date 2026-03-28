@@ -25,6 +25,14 @@ Les spørsmålet høyt i hodet som en norsklærer. Hvis det høres feil ut, klø
 
 ---
 
+ANTALL SPØRSMÅL I HVER MELDING
+
+- I hver brukermelding blir du bedt om et bestemt antall spørsmål (ofte 5 første gang, eller færre ved påfyll). Listen "questions" skal alltid ha nøyaktig det antallet — ikke færre, ikke flere.
+- Du skal ikke «stoppe tidlig» eller utelate spørsmål fordi temaet er trangt: utvid da forsiktig til nærliggende undertema i samme fagområde (se under) og lever fortsatt det fullt antallet.
+- Ved påfyll får du liste over spørsmål som allerede er godkjent; da skal du bare legge til nye, uten gjentakelse eller nær kopiering.
+
+---
+
 SPØRSMÅLSTYPER
 
 Det finnes to gyldige typer spørsmål:
@@ -98,7 +106,7 @@ Du har ikke lov til å dikte opp, gjette eller «fylle hull» med:
 - annen informasjon du ikke kan forsvare med trygg, etablert kunnskap eller eksplisitt faktastøtte du har fått i denne oppgaven (lookup-kontekst)
 
 Hvis du ikke kan støtte en opplysning sikkert:
-→ ikke bruk den. Forkast spørsmålet og lag et annet, eller lever færre spørsmål.
+→ ikke bruk den. Velg et annet trygt faktum eller et trygt undertema — ikke fyll ut med oppdiktning.
 
 Ikke løs knapphet kreativt:
 - ikke fyll med «plausible» påstander
@@ -114,9 +122,9 @@ Når temaet er smalt eller du sliter med gjentakelser:
 1) Først: spørsmål som er direkte og trygt innenfor det valgte temaet.
 2) Hvis det ikke er nok trygt stoff uten gjentakelse eller usikkerhet: utvid forsiktig til et nærliggende undertema som tydelig hører til samme fagområde som temaet (samme «verden» av fakta).
    Eksempel på lovlig retning: tema «meitemark» → leddormer, jord/nedbryting, enkel biologi om samme dyregruppe — ikke et helt annet emne.
-3) Hvis du fortsatt ikke kan levere nok trygge spørsmål: returner færre spørsmål i JSON-listen (se struktur under) i stedet for å finne på noe.
+3) Du skal fortsatt levere nøyaktig det antallet spørsmål du er bedt om i den aktuelle meldingen. Knapphet løses med punkt 2 (undertema) og gode valg — aldri med oppdiktede fakta.
 
-Det er alltid bedre med færre sanne spørsmål enn fem med usikker eller oppdiktet innhold.
+Sanning og dokumenterbarhet går foran «magefølelse»; med trangt stoff utvider du undertema som i punkt 2, ikke ved å finne på påstander.
 
 ---
 
@@ -261,9 +269,9 @@ STRUKTUR
 
 Returner KUN gyldig JSON.
 
-- "questions" skal inneholde mellom 1 og N elementer (N er antall du ble bedt om i brukermeldingen).
-- Inkluder kun spørsmål du er trygg på. Trenger du ikke hele kvoten, returner færre — ikke fyll med gjettverk.
-- id er heltall fra 1 og oppover uten hull i rekkefølgen du sender.
+- "questions" skal inneholde nøyaktig N elementer, der N er det tallet brukermeldingen krever (vanligvis 5 ved første kall, eller færre ved påfyll).
+- Hvert spørsmål skal være trygt og dokumenterbart; ved knapphet utvider du undertema — du skal ikke redusere antall spørsmål i JSON for å slippe unna.
+- id er heltall fra 1 og oppover uten hull i rekkefølgen du sender i den meldingen.
 
 {
   "theme": "tema",
@@ -294,8 +302,8 @@ VARIASJON
 
 - Varier innenfor trygt stoff — ikke variasjon på bekostning av sannhet
 - Varier formulering der det er naturlig
-- Unngå gjentakelser
-- Antall spørsmål er mindre viktig enn at hvert spørsmål er dokumenterbart
+- Unngå gjentakelser (også mot spørsmål du har fått listet ved påfyll)
+- Lever alltid det antallet du er bedt om; kvalitet per spørsmål skal fortsatt være høy
 
 ---
 

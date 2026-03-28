@@ -932,12 +932,47 @@ async function maybeBuildThemeLookupSupport(theme) {
 /**
  * Bygger brukerprompt til quizgenerering.
  * @param {boolean} subjectMode Nytt: når true, tolkes temaet som skolefag (eksplisitt brukervalg).
+ * @param {{ needOnly: number, existingQuestions: object[] }|null} topUp når flere modellkall trengs for å nå 5 spørsmål
  */
-function buildQuizUserPrompt(theme, questionCount, lookup, subjectMode = false) {
+function buildQuizUserPrompt(
+  theme,
+  questionCount,
+  lookup,
+  subjectMode = false,
+  topUp = null
+) {
   const themeJson = JSON.stringify(theme);
-  let prompt = `Generer opptil ${questionCount} enkle flervalgsoppgaver på norsk om temaet: ${themeJson}.
-Listen "questions" i JSON skal ha mellom 1 og ${questionCount} elementer. Ta med bare spørsmål du er trygg på — det er bedre med færre spørsmål enn å fylle med gjettverk, oppdiktede synonymer eller «vanlige navn» du ikke kan dokumentere.
-Prioritet ved knapphet: (1) direkte innenfor temaet, (2) deretter forsiktig utvidelse til nærliggende undertema i samme fagområde — ikke hopp til helt andre emner.`;
+  const need =
+    topUp && typeof topUp.needOnly === "number"
+      ? topUp.needOnly
+      : questionCount;
+
+  let prompt;
+  if (
+    topUp &&
+    Array.isArray(topUp.existingQuestions) &&
+    topUp.existingQuestions.length > 0
+  ) {
+    const lines = topUp.existingQuestions
+      .map(
+        (q, i) =>
+          `${i + 1}. Spørsmål: ${JSON.stringify(String(q?.question ?? ""))} — fasit: ${JSON.stringify(String(q?.answer ?? ""))}`
+      )
+      .join("\n");
+    prompt = `Oppfølging: quizen om tema ${themeJson} mangler flere spørsmål.
+
+Allerede godkjente spørsmål (ikke gjenta, ikke kopier samme faktum eller nær identisk formulering):
+${lines}
+
+Generer nøyaktig ${need} NYE flervalgsoppgaver. Listen "questions" i JSON skal ha nøyaktig ${need} elementer — ikke færre, ikke flere. Målet er ${questionCount} spørsmål totalt når disse legges til listen over.`;
+  } else {
+    prompt = `Generer nøyaktig ${need} enkle flervalgsoppgaver på norsk om temaet: ${themeJson}.
+Listen "questions" i JSON skal ha nøyaktig ${need} elementer — ikke færre, ikke flere.`;
+  }
+
+  prompt += `
+
+Bruk bare trygg kunnskap eller eksplisitt faktastøtte i denne samtalen — ikke gjettverk eller oppdiktede synonymer. Ved trangt tema: utvid forsiktig til nærliggende undertema i samme fagområde og lever fortsatt nøyaktig ${need} gyldige spørsmål i dette JSON-svaret.`;
 
   if (subjectMode) {
     prompt += `
@@ -1037,7 +1072,7 @@ Hvis du er i tvil om spørsmålet kan ha flere riktige fritekstsvar, skal du for
 
   prompt += `
 
-Returner KUN JSON med denne formen (ingen markdown). "questions" kan ha 1–${questionCount} elementer:
+Returner KUN JSON med denne formen (ingen markdown). "questions" skal ha nøyaktig ${need} elementer:
 {"theme":...,"questions":[...]}`;
 
   return prompt;
@@ -1088,23 +1123,44 @@ async function generateQuizWithOpenAI(
       `[quiz lookup] parts=${JSON.stringify(lookup.splitParts || [])}`
     );
   }
-  const userPrompt = buildQuizUserPrompt(
-    theme,
-    questionCount,
-    lookup,
-    subjectMode
-  );
   console.log(
     `[quiz lookup] promptHasLookupContext=${lookup.context ? "true" : "false"}`
   );
 
   let lastValidationError = null;
-  /** Ved for få unike spørsmål etter minne: beste delvise mengde (aldri gjenbruke duplikater). */
-  let bestPartialPayload = null;
+  let resolvedTheme = String(theme).trim();
+  /** @type {object[]} */
+  let accumulated = [];
 
-  /* Flere forsøk når minnefilter forkaster enkelte spørsmål — mål er questionCount; ellers delvis quiz. */
-  const maxGenerateAttempts = 5;
-  for (let attempt = 0; attempt < maxGenerateAttempts; attempt += 1) {
+  const memMode =
+    memoryOptions && memoryOptions.mode === QUIZ_MEMORY_MODE.DAILY
+      ? QUIZ_MEMORY_MODE.DAILY
+      : QUIZ_MEMORY_MODE.CUSTOM;
+  const memoryPool =
+    memoryOptions &&
+    memoryOptions.pool &&
+    typeof memoryOptions.pool.query === "function"
+      ? memoryOptions.pool
+      : null;
+
+  const maxTotalModelCalls = 18;
+
+  for (let callIdx = 0; callIdx < maxTotalModelCalls; callIdx += 1) {
+    if (accumulated.length >= questionCount) {
+      break;
+    }
+
+    const need = questionCount - accumulated.length;
+    const userPrompt = buildQuizUserPrompt(
+      theme,
+      questionCount,
+      lookup,
+      subjectMode,
+      accumulated.length > 0
+        ? { needOnly: need, existingQuestions: accumulated }
+        : null
+    );
+
     const parsed = await parseJsonChatCompletion(
       openai.chat.completions.create({
         model,
@@ -1122,14 +1178,21 @@ async function generateQuizWithOpenAI(
     const validationError = validateGeneratedQuiz(
       parsed,
       theme,
-      1,
-      questionCount,
+      need,
+      need,
       lookup,
       subjectMode
     );
     if (validationError) {
       lastValidationError = validationError;
+      console.log(
+        `[quiz generate] call=${callIdx + 1} need=${need} validation=${JSON.stringify(validationError)}`
+      );
       continue;
+    }
+
+    if (typeof parsed.theme === "string" && parsed.theme.trim()) {
+      resolvedTheme = parsed.theme.trim();
     }
 
     parsed.questions = parsed.questions.map((q, idx) => ({
@@ -1138,140 +1201,88 @@ async function generateQuizWithOpenAI(
     }));
 
     const shuffled = parsed.questions.map(shuffleQuestionOptions);
-    let workingQuestions = shuffled;
+    const memResult = await filterQuizQuestionsAgainstMemory(
+      memoryPool,
+      shuffled,
+      theme,
+      memMode,
+      accumulated
+    );
+    const batch = memResult.questions;
 
-    if (
-      memoryOptions &&
-      memoryOptions.pool &&
-      typeof memoryOptions.pool.query === "function"
-    ) {
-      const memMode =
-        memoryOptions.mode === QUIZ_MEMORY_MODE.DAILY
-          ? QUIZ_MEMORY_MODE.DAILY
-          : QUIZ_MEMORY_MODE.CUSTOM;
-      const memResult = await filterQuizQuestionsAgainstMemory(
-        memoryOptions.pool,
-        workingQuestions,
-        theme,
-        memMode
+    if (batch.length === 0) {
+      lastValidationError =
+        "all questions rejected as duplicates (quiz memory)";
+      console.log(
+        `[quiz generate] call=${callIdx + 1} need=${need} memoryRejected=all`
       );
-      workingQuestions = memResult.questions;
-      if (workingQuestions.length === 0) {
-        lastValidationError =
-          "all questions rejected as duplicates (quiz memory)";
-        continue;
-      }
-      if (workingQuestions.length < questionCount) {
-        console.log(
-          `[quiz memory] insufficientAfterFilter have=${workingQuestions.length} need=${questionCount} — partial candidate / retry`
-        );
-        lastValidationError = `quiz memory: got ${workingQuestions.length} questions after duplicate filter, target ${questionCount}`;
-        const renumberedPartial = workingQuestions.map((q, idx) => ({
-          ...q,
-          id: idx + 1,
-        }));
-        const partialValErr = validateGeneratedQuiz(
-          { ...parsed, questions: renumberedPartial },
-          theme,
-          renumberedPartial.length,
-          renumberedPartial.length,
-          lookup,
-          subjectMode
-        );
-        if (
-          !partialValErr &&
-          renumberedPartial.length >
-            (bestPartialPayload?.questions?.length ?? 0)
-        ) {
-          bestPartialPayload = {
-            parsed,
-            questions: renumberedPartial,
-          };
-        }
-        continue;
-      }
-      workingQuestions = workingQuestions.map((q, idx) => ({
-        ...q,
-        id: idx + 1,
-      }));
-      const afterMemError = validateGeneratedQuiz(
-        { ...parsed, questions: workingQuestions },
+      continue;
+    }
+
+    if (memResult.rejected > 0) {
+      console.log(
+        `[quiz generate] call=${callIdx + 1} need=${need} memoryAccepted=${batch.length} memoryRejected=${memResult.rejected}`
+      );
+    }
+
+    accumulated = [...accumulated, ...batch];
+    accumulated = accumulated.slice(0, questionCount);
+    accumulated = accumulated.map((q, idx) => ({
+      ...q,
+      id: idx + 1,
+    }));
+
+    if (accumulated.length === questionCount) {
+      const fullPayload = {
+        theme: resolvedTheme,
+        questions: accumulated,
+      };
+      const finalErr = validateGeneratedQuiz(
+        fullPayload,
         theme,
         questionCount,
         questionCount,
         lookup,
         subjectMode
       );
-      if (afterMemError) {
-        lastValidationError = afterMemError;
+      if (finalErr) {
+        lastValidationError = finalErr;
+        console.log(
+          `[quiz generate] fullQuizValidation failed=${JSON.stringify(finalErr)} — resetting accumulated`
+        );
+        accumulated = [];
         continue;
       }
-    }
 
-    let finalQuestions = workingQuestions;
-    let sharedImage = null;
-    try {
-      const decorated = await attachDecorativeQuizImages(
-        theme,
-        lookup,
-        workingQuestions
-      );
-      finalQuestions = decorated.questions;
-      sharedImage = decorated.sharedImage;
-    } catch (imgErr) {
-      console.warn(
-        "[quiz image] attach failed:",
-        imgErr && typeof imgErr.message === "string"
-          ? imgErr.message
-          : String(imgErr)
-      );
-    }
+      let finalQuestions = accumulated;
+      let sharedImage = null;
+      try {
+        const decorated = await attachDecorativeQuizImages(
+          theme,
+          lookup,
+          accumulated
+        );
+        finalQuestions = decorated.questions;
+        sharedImage = decorated.sharedImage;
+      } catch (imgErr) {
+        console.warn(
+          "[quiz image] attach failed:",
+          imgErr && typeof imgErr.message === "string"
+            ? imgErr.message
+            : String(imgErr)
+        );
+      }
 
-    return {
-      ...parsed,
-      questions: finalQuestions,
-      sharedImage,
-    };
-  }
-
-  if (
-    bestPartialPayload &&
-    bestPartialPayload.questions.length >= 1 &&
-    memoryOptions &&
-    memoryOptions.pool &&
-    typeof memoryOptions.pool.query === "function"
-  ) {
-    console.log(
-      `[quiz memory] partialQuiz returning count=${bestPartialPayload.questions.length} target=${questionCount}`
-    );
-    const { parsed: partialParsed, questions: partialQs } = bestPartialPayload;
-    let finalQuestions = partialQs;
-    let sharedImage = null;
-    try {
-      const decorated = await attachDecorativeQuizImages(
-        theme,
-        lookup,
-        partialQs
-      );
-      finalQuestions = decorated.questions;
-      sharedImage = decorated.sharedImage;
-    } catch (imgErr) {
-      console.warn(
-        "[quiz image] attach failed:",
-        imgErr && typeof imgErr.message === "string"
-          ? imgErr.message
-          : String(imgErr)
-      );
+      return {
+        theme: resolvedTheme,
+        questions: finalQuestions,
+        sharedImage,
+      };
     }
-    return {
-      ...partialParsed,
-      questions: finalQuestions,
-      sharedImage,
-    };
   }
 
   throw new Error(
-    `Invalid quiz shape from model: ${lastValidationError || "unknown validation error"}`
+    `Could not produce ${questionCount} valid unique questions: ${lastValidationError || "unknown error"}`
   );
 }
 

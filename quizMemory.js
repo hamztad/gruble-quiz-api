@@ -296,34 +296,65 @@ async function fetchQuizMemoryHistoryRows(pool) {
 }
 
 /**
- * @param {import('pg').Pool} pool
+ * @param {import('pg').Pool|null} pool
  * @param {object[]} questions modellens spørsmålobjekter (med .question, .answer, valgfri .fact_key)
  * @param {string} theme
  * @param {'daily'|'custom'} mode
+ * @param {object[]|null} priorAcceptedQuestions allerede godkjente spørsmål (kun duplikatkontroll mot nye)
  */
-async function filterQuizQuestionsAgainstMemory(pool, questions, theme, mode) {
+async function filterQuizQuestionsAgainstMemory(
+  pool,
+  questions,
+  theme,
+  mode,
+  priorAcceptedQuestions = null
+) {
   const m =
     mode === QUIZ_MEMORY_MODE.DAILY
       ? QUIZ_MEMORY_MODE.DAILY
       : QUIZ_MEMORY_MODE.CUSTOM;
 
-  if (!pool || !Array.isArray(questions) || questions.length === 0) {
+  if (!Array.isArray(questions) || questions.length === 0) {
     return { questions: questions || [], rejected: 0, rejectedSnippets: [] };
   }
 
-  let historyRows;
-  try {
-    historyRows = await fetchQuizMemoryHistoryRows(pool);
-  } catch (e) {
+  let historyRows = [];
+  if (pool && typeof pool.query === "function") {
+    try {
+      historyRows = await fetchQuizMemoryHistoryRows(pool);
+    } catch (e) {
+      logMemory(
+        `historyFetchFailed msg=${JSON.stringify(String(e?.message || e))} — proceeding without history`
+      );
+      historyRows = [];
+    }
+  } else {
     logMemory(
-      `historyFetchFailed msg=${JSON.stringify(String(e?.message || e))} — proceeding without history`
+      `theme=${JSON.stringify(normalizeThemeForMemory(theme))} historyRows=0 reason=no_pool_internal_and_prior_only`
     );
-    historyRows = [];
   }
 
   const accepted = [];
   /** @type {MemoryRowNorm[]} */
   const acceptedRows = [];
+
+  if (Array.isArray(priorAcceptedQuestions)) {
+    for (let p = 0; p < priorAcceptedQuestions.length; p += 1) {
+      const pq = priorAcceptedQuestions[p];
+      const pnQ = normalizeQuizQuestionText(pq?.question);
+      const pnA = normalizeQuizAnswerText(pq?.answer);
+      const pFk = normalizeFactKey(pq?.fact_key);
+      if (pnQ && pnA) {
+        acceptedRows.push({
+          question: pnQ,
+          answer: pnA,
+          factKey: pFk,
+        });
+      }
+    }
+  }
+
+  const priorSeeded = acceptedRows.length;
   const rejectedSnippets = [];
   let rejected = 0;
   const reasonHistogram = {
@@ -333,7 +364,7 @@ async function filterQuizQuestionsAgainstMemory(pool, questions, theme, mode) {
   };
 
   logMemory(
-    `mode=${m} theme=${JSON.stringify(normalizeThemeForMemory(theme))} historyRows=${historyRows.length} checked=${questions.length}`
+    `mode=${m} theme=${JSON.stringify(normalizeThemeForMemory(theme))} historyRows=${historyRows.length} priorSeeded=${priorSeeded} checked=${questions.length}`
   );
 
   for (let i = 0; i < questions.length; i += 1) {
