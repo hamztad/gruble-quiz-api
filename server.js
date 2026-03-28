@@ -1010,6 +1010,7 @@ async function maybeBuildThemeLookupSupport(theme) {
  * @param {boolean} subjectMode Nytt: når true, tolkes temaet som skolefag (eksplisitt brukervalg).
  * @param {{ needOnly: number, existingQuestions: object[] }|null} topUp når flere modellkall trengs for å nå 5 spørsmål
  * @param {string} [difficulty] easy | normal | hard (easy hvis utelatt)
+ * @param {'standard'|'subtheme'|'broad'} [fallbackMode] ekstra veiledning når genereringen henger (ikke svekker backend-validering)
  */
 function buildQuizUserPrompt(
   theme,
@@ -1017,7 +1018,8 @@ function buildQuizUserPrompt(
   lookup,
   subjectMode = false,
   topUp = null,
-  difficulty = "easy"
+  difficulty = "easy",
+  fallbackMode = "standard"
 ) {
   const themeJson = JSON.stringify(theme);
   const need =
@@ -1154,6 +1156,22 @@ Unngå spesielt formuleringer og spørsmålsformer som ofte blir åpne eller dis
 Hvis du er i tvil om spørsmålet kan ha flere riktige fritekstsvar, skal du forkaste det og lage et mer presist spørsmål med én klar fasit.`;
   }
 
+  if (fallbackMode === "subtheme") {
+    prompt += `
+
+FALLBACK — UNDERTEMA (kvalitet som før):
+Tidligere forsøk har feilet kvalitetssjekker. Du skal fortsatt ikke finne på fakta, synonymer eller usikre detaljer.
+Utvid til tydelig beslektede undertema i samme fagområde som ${themeJson}, for eksempel: meitemark → leddormer, jord, nedbryting; norsk → grammatikk, ordklasser, rettskriving; samfunnsfag → demokrati, Storting, grunnleggende begreper — tilpass til det faktiske temaet.
+Feltet "theme" i JSON-svaret skal fortsatt være eksakt: ${themeJson}.`;
+  } else if (fallbackMode === "broad") {
+    prompt += `
+
+FALLBACK — BRED TRYGG KJERNE (kvalitet som før):
+Det er fortsatt vanskelig å få godkjente spørsmål. Lag spørsmål med svært trygge, brede og lærebok-aktige fakta innen samme kunnskapsfelt som temaet naturlig hører til — bare det du er sikker på og kan dokumentere.
+Ikke finn på detaljer, alternative navn eller «vanlige» påstander du ikke kan forsvare.
+Feltet "theme" i JSON-svaret skal fortsatt være eksakt: ${themeJson}.`;
+  }
+
   prompt += `
 
 Returner KUN JSON med denne formen (ingen markdown). "questions" skal sikte mot nøyaktig ${need} elementer:
@@ -1230,7 +1248,12 @@ async function generateQuizWithOpenAI(
       ? memoryOptions.pool
       : null;
 
-  const maxTotalModelCalls = 8;
+  /** Etter N mislykkede forsøk uten nytt godkjent spørsmål: sterkere undertema-/bredde-veiledning i brukerprompt (validering uendret). */
+  const STALL_BEFORE_SUBTHEME_FALLBACK = 5;
+  const STALL_BEFORE_BROAD_FALLBACK = 10;
+  const maxTotalModelCalls = 22;
+
+  let stallCount = 0;
 
   for (let callIdx = 0; callIdx < maxTotalModelCalls; callIdx += 1) {
     if (accumulated.length >= questionCount) {
@@ -1238,6 +1261,18 @@ async function generateQuizWithOpenAI(
     }
 
     const need = questionCount - accumulated.length;
+    const fallbackMode =
+      stallCount >= STALL_BEFORE_BROAD_FALLBACK
+        ? "broad"
+        : stallCount >= STALL_BEFORE_SUBTHEME_FALLBACK
+          ? "subtheme"
+          : "standard";
+    if (fallbackMode !== "standard") {
+      console.log(
+        `[quiz generate] fallbackMode=${fallbackMode} stallCount=${stallCount} call=${callIdx + 1}`
+      );
+    }
+
     const userPrompt = buildQuizUserPrompt(
       theme,
       questionCount,
@@ -1246,7 +1281,8 @@ async function generateQuizWithOpenAI(
       accumulated.length > 0
         ? { needOnly: need, existingQuestions: accumulated }
         : null,
-      diffNorm
+      diffNorm,
+      fallbackMode
     );
 
     const parsed = await parseJsonChatCompletion(
@@ -1274,6 +1310,7 @@ async function generateQuizWithOpenAI(
     );
     if (validationError) {
       lastValidationError = validationError;
+      stallCount += 1;
       console.log(
         `[quiz generate] call=${callIdx + 1} need=${need} validation=${JSON.stringify(validationError)}`
       );
@@ -1302,11 +1339,14 @@ async function generateQuizWithOpenAI(
     if (batch.length === 0) {
       lastValidationError =
         "all questions rejected as duplicates (quiz memory)";
+      stallCount += 1;
       console.log(
         `[quiz generate] call=${callIdx + 1} need=${need} memoryRejected=all`
       );
       continue;
     }
+
+    stallCount = 0;
 
     if (memResult.rejected > 0) {
       console.log(
@@ -1337,6 +1377,7 @@ async function generateQuizWithOpenAI(
       );
       if (finalErr) {
         lastValidationError = finalErr;
+        stallCount += 1;
         console.log(
           `[quiz generate] fullQuizValidation failed=${JSON.stringify(finalErr)} — resetting accumulated`
         );
