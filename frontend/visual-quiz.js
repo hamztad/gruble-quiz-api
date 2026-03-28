@@ -3,6 +3,7 @@
  */
 const API_BASE = "https://gruble-quiz-api.onrender.com";
 const QUIZ_VARIANT = "visual-10";
+const QUESTION_COUNT = 10;
 
 const state = {
   theme: "",
@@ -61,6 +62,21 @@ function shuffleQuizOptions(questions) {
   });
 }
 
+function isValidVisualQuizPayload(data) {
+  const questions = Array.isArray(data?.questions) ? data.questions : [];
+  if ((data?.variant || QUIZ_VARIANT) !== QUIZ_VARIANT) {
+    return false;
+  }
+  if (questions.length !== QUESTION_COUNT) {
+    return false;
+  }
+  const lastQuestion = questions[questions.length - 1];
+  if (!lastQuestion || lastQuestion.imageQuestion !== true) {
+    return false;
+  }
+  return true;
+}
+
 function totalSteps() {
   return Math.max(state.questions.length, 1);
 }
@@ -106,6 +122,11 @@ async function loadVisualQuiz() {
       return false;
     }
     const data = await response.json();
+    if (!isValidVisualQuizPayload(data)) {
+      el.innerHTML =
+        "<p class=\"empty-state\">Fant ingen gyldig bilde-quiz med 10 spørsmål. Start en ny runde.</p>";
+      return false;
+    }
     state.theme = data.theme || "";
     state.difficulty = data.difficulty || "normal";
     state.variant = data.variant || QUIZ_VARIANT;
@@ -180,6 +201,11 @@ function render() {
       "<p class=\"empty-state\">Ingen spørsmål lastet. Bruk knappene over.</p>";
     return;
   }
+  if (state.questions.length !== QUESTION_COUNT) {
+    el.innerHTML =
+      "<p class=\"empty-state\">Denne bilde-quizen er ugyldig. Start en ny 10-spørsmålsrunde.</p>";
+    return;
+  }
 
   const q = state.questions[state.currentIndex];
   const qs = getQs(q.id);
@@ -250,7 +276,7 @@ function render() {
       <header class="vq-play__header">
         <div class="vq-pills">
           <span class="vq-pill">${escapeHtml(state.theme)}</span>
-          <span class="vq-pill">${escapeHtml(difficultyLabel(state.difficulty))}</span>
+          <span class="vq-pill">${QUESTION_COUNT} spørsmål</span>
           <span class="vq-pill vq-pill--score">${state.totalScore} poeng</span>
         </div>
         <button type="button" class="vq-btn-ghost" id="visual-reload">Start på nytt</button>
@@ -344,14 +370,6 @@ function render() {
 async function generateVisualQuiz() {
   const btn = document.getElementById("visual-generate-button");
   const statusEl = document.getElementById("visual-generate-status");
-  const themeInput = document.getElementById("visual-theme-input");
-  const theme = (themeInput?.value ?? "").trim() || "Diverse";
-  const subjectMode = Boolean(
-    document.getElementById("visual-subject-mode")?.checked
-  );
-  const diffEl = document.getElementById("visual-difficulty");
-  const dr = String(diffEl?.value ?? "normal").toLowerCase();
-  const difficulty = dr === "easy" || dr === "hard" ? dr : "normal";
 
   btn.disabled = true;
   statusEl.innerHTML = '<span class="vq-spinner" aria-hidden="true"></span> Genererer quiz…';
@@ -359,7 +377,7 @@ async function generateVisualQuiz() {
     const res = await fetch(`${API_BASE}/api/internal/generate-visual-10-quiz`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ theme, subjectMode, difficulty }),
+      body: JSON.stringify({}),
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {

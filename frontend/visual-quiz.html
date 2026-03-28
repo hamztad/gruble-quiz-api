@@ -17,29 +17,11 @@
       </header>
 
       <section class="vq-setup-card" aria-label="Start ny quiz">
-        <span class="vq-setup-card__label">Tema</span>
-        <input
-          type="text"
-          id="visual-theme-input"
-          class="vq-theme-input"
-          maxlength="50"
-          placeholder="F.eks. Norge, naturfag, vikingtid…"
-          aria-label="Tema for bilde-quiz"
-        />
-        <div class="vq-setup-row">
-          <label>
-            <input type="checkbox" id="visual-subject-mode" name="subjectMode" />
-            Fagmodus
-          </label>
-          <label>
-            Vanskegrad
-            <select id="visual-difficulty" name="difficulty" aria-label="Vanskegrad">
-              <option value="easy">Lett</option>
-              <option value="normal" selected>Normal</option>
-              <option value="hard">Vanskelig</option>
-            </select>
-          </label>
-        </div>
+        <span class="vq-setup-card__label">Fast oppsett</span>
+        <p class="vq-setup-copy">
+          Kategorien velges automatisk fra en forhåndsbestemt, vektet pool. Hver runde
+          er alltid en 10-spørsmåls bilde-quiz med eget bildespørsmål til slutt.
+        </p>
         <div class="vq-setup-actions">
           <button type="button" class="vq-btn-primary" id="visual-generate-button">
             Start ny quiz (10 spørsmål)
@@ -53,7 +35,7 @@
         <details class="vq-dev-details">
           <summary>Teknisk info</summary>
           <p>
-            Maks tre ord i tema. Standard-quizen er uendret. API:
+            Kategorien velges på serveren. Standard-quizen er uendret. API:
             <code>POST /api/internal/generate-visual-10-quiz</code>,
             <code>GET /api/quiz/visual-today</code>.
           </p>

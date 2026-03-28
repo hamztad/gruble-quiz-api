@@ -105,6 +105,63 @@ const THEME_INPUT_MAX_WORDS = 3;
 
 /** Lagres som `variant` i questions JSONB; skiller bilde-10-quiz fra standard flyt. */
 const VISUAL_TEN_QUIZ_VARIANT = "visual-10";
+const VISUAL_TEN_QUIZ_QUESTION_COUNT = 10;
+const VISUAL_TEN_THEME_PRESETS = Object.freeze([
+  { theme: "historie", weight: 18, subjectMode: true },
+  { theme: "geografi", weight: 16, subjectMode: true },
+  { theme: "naturfag", weight: 16, subjectMode: true },
+  { theme: "kunst", weight: 12, subjectMode: true },
+  { theme: "dyr", weight: 10, subjectMode: false },
+  { theme: "arkitektur", weight: 9, subjectMode: false },
+  { theme: "romfart", weight: 7, subjectMode: false },
+  { theme: "oppfinnelser", weight: 6, subjectMode: false },
+  { theme: "verdensarv", weight: 6, subjectMode: false },
+]);
+
+function pickWeightedVisualTenThemePreset() {
+  const totalWeight = VISUAL_TEN_THEME_PRESETS.reduce(
+    (sum, preset) => sum + Math.max(0, Number(preset.weight) || 0),
+    0
+  );
+  if (totalWeight <= 0) {
+    return VISUAL_TEN_THEME_PRESETS[0];
+  }
+  let cursor = Math.random() * totalWeight;
+  for (const preset of VISUAL_TEN_THEME_PRESETS) {
+    cursor -= Math.max(0, Number(preset.weight) || 0);
+    if (cursor < 0) {
+      return preset;
+    }
+  }
+  return VISUAL_TEN_THEME_PRESETS[VISUAL_TEN_THEME_PRESETS.length - 1];
+}
+
+function isValidVisualTenQuizPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+  const questions = Array.isArray(payload.questions) ? payload.questions : [];
+  if (questions.length !== VISUAL_TEN_QUIZ_QUESTION_COUNT) {
+    return false;
+  }
+  if (payload.variant && payload.variant !== VISUAL_TEN_QUIZ_VARIANT) {
+    return false;
+  }
+  const lastQuestion = questions[questions.length - 1];
+  if (!lastQuestion || lastQuestion.imageQuestion !== true) {
+    return false;
+  }
+  const sharedImage = payload.sharedImage;
+  if (
+    !sharedImage ||
+    typeof sharedImage !== "object" ||
+    typeof sharedImage.url !== "string" ||
+    !sharedImage.url.trim()
+  ) {
+    return false;
+  }
+  return true;
+}
 
 /**
  * Nytt: avvis for langt tema før OpenAI-kall (testgenerering).
@@ -1695,7 +1752,7 @@ app.get("/api/quiz/visual-today", async (_req, res) => {
       `SELECT * FROM quizzes
        WHERE questions::jsonb->>'variant' = $1
        ORDER BY created_at DESC
-       LIMIT 1`,
+       LIMIT 25`,
       [VISUAL_TEN_QUIZ_VARIANT]
     );
 
@@ -1704,8 +1761,26 @@ app.get("/api/quiz/visual-today", async (_req, res) => {
       return;
     }
 
-    const quiz = result.rows[0];
-    const { sharedImage, questions, variant } = getQuizQuestionsPayloadFromRow(quiz);
+    let quiz = null;
+    let sharedImage = null;
+    let questions = [];
+    let variant = VISUAL_TEN_QUIZ_VARIANT;
+    for (const row of result.rows) {
+      const parsed = getQuizQuestionsPayloadFromRow(row);
+      if (!isValidVisualTenQuizPayload(parsed)) {
+        continue;
+      }
+      quiz = row;
+      sharedImage = parsed.sharedImage;
+      questions = parsed.questions;
+      variant = parsed.variant || VISUAL_TEN_QUIZ_VARIANT;
+      break;
+    }
+
+    if (!quiz) {
+      res.status(404).json({ error: "No valid visual-10 quiz found" });
+      return;
+    }
 
     const questionsForClient = questions.map((q) => stripQuestionForPublicClient(q));
 
@@ -2605,21 +2680,10 @@ app.post("/api/internal/generate-visual-10-quiz", async (req, res) => {
     return;
   }
 
-  const theme =
-    typeof req.body?.theme === "string" ? req.body.theme.trim() : "";
-  if (!theme) {
-    res.status(400).json({ error: "Missing or empty theme" });
-    return;
-  }
-
-  const themeInputError = validateThemeForQuizInput(theme);
-  if (themeInputError) {
-    res.status(400).json({ error: themeInputError });
-    return;
-  }
-
   const openai = new OpenAI({ apiKey });
   const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const preset = pickWeightedVisualTenThemePreset();
+  const theme = preset.theme;
 
   const quizSourceRaw =
     typeof req.body?.quizSource === "string"
@@ -2632,8 +2696,8 @@ app.post("/api/internal/generate-visual-10-quiz", async (req, res) => {
       ? QUIZ_MEMORY_MODE.DAILY
       : QUIZ_MEMORY_MODE.CUSTOM;
 
-  const subjectMode = req.body?.subjectMode === true;
-  const difficulty = normalizeQuizDifficulty(req.body?.difficulty);
+  const subjectMode = preset.subjectMode === true;
+  const difficulty = "normal";
 
   try {
     const databaseUrl = process.env.DATABASE_URL;

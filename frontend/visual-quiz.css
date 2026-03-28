@@ -115,6 +115,12 @@ body.vq-body {
   margin-bottom: 0.5rem;
 }
 
+.vq-setup-copy {
+  margin: 0 0 1rem;
+  font-size: 0.98rem;
+  color: var(--vq-ink-soft);
+}
+
 .vq-theme-input {
   width: 100%;
   padding: 0.85rem 1rem;
