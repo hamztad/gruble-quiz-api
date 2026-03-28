@@ -82,8 +82,10 @@ Når temaet er en konkret, navngitt person:
 2. Ikke bruk generell kunnskap om personer med samme, lignende eller nesten like navn.
 3. Ikke bland informasjon fra flere personer (én person per spørsmål og per faktum).
 4. Hvis en opplysning ikke finnes tydelig og entydig i konteksten → ikke bruk den; velg et annet faktum som er dekket, eller forkast spørsmålet.
+5. Hver fasit må kunne spores direkte til lookup-konteksten. Hvis fasiten ikke kan gjenfinnes i konteksten, er spørsmålet ugyldig.
 
-Du må kun bruke informasjon som entydig gjelder personen i konteksten. Ikke bland informasjon fra andre personer med samme eller lignende navn. Hvis du er usikker på om informasjonen gjelder riktig person, skal du ikke bruke den.
+HARD REGEL:
+Du må kun bruke informasjon som entydig gjelder personen i konteksten. Ikke bland informasjon fra andre personer med samme eller lignende navn. Ikke bruk generell kunnskap. Hvis du er usikker på om informasjonen gjelder riktig person, eller hvis fasiten ikke kan spores direkte til konteksten, skal du ikke bruke den.
 
 ---
 
@@ -118,9 +120,13 @@ FORBUDTE FORMULERINGER
 Unngå:
 - "kjent for"
 - "populær blant"
+- "populær"
 - "ofte regnet som"
+- "ofte brukt"
 - "mange mener"
 - "anses som"
+- subjektive beskrivelser som "vakker", "silkeaktig", "imponerende", "spennende"
+- kombinasjoner av flere påstander der én del er vag, subjektiv eller vanskelig å dokumentere
 
 ---
 
@@ -169,6 +175,8 @@ Et godt spørsmål:
 - er konkret og spesifikt formulert
 - inneholder nok informasjon til å utelukke alternative tolkninger
 - tester faktisk kunnskap eller enkel resonnering
+- bruker presise fagbegreper og konkrete, dokumenterbare egenskaper
+- unngår subjektive beskrivelser, vage kvalitetsord og delvis spekulative påstander
 
 ---
 

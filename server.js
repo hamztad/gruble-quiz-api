@@ -763,6 +763,73 @@ function getEmptyThemeLookupSupport() {
   };
 }
 
+function normalizeLookupTraceText(text) {
+  return String(text ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .replace(/[^\p{L}\d\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getLookupTraceTokens(text) {
+  return normalizeLookupTraceText(text)
+    .split(/\s+/)
+    .filter((token) => token && (token.length >= 4 || /^\d{4}$/.test(token)));
+}
+
+/**
+ * Nytt: streng kontroll for person-tema med lookup.
+ * Gjelder både eksplisitte personoppslag og fullnavn som ser ut som en bio i konteksten.
+ */
+function shouldEnforceStrictPersonLookup(theme, lookup) {
+  const context = String(lookup?.context ?? "").trim();
+  if (!context) {
+    return false;
+  }
+  if (lookup?.hasPersonContext || (lookup?.personTitles || []).length > 0) {
+    return true;
+  }
+
+  const words = String(theme ?? "").trim().split(/\s+/).filter(Boolean);
+  if (words.length < 2) {
+    return false;
+  }
+
+  const themeNorm = normalizeLookupTraceText(theme);
+  const contextNorm = normalizeLookupTraceText(context);
+  return (
+    Boolean(themeNorm) &&
+    contextNorm.includes(themeNorm) &&
+    (/\b(født|fødd)\b/i.test(context) || /\b(18|19|20)\d{2}\b/.test(context))
+  );
+}
+
+function isAnswerTraceableToLookupContext(answerText, lookupContext) {
+  const answerNorm = normalizeLookupTraceText(answerText);
+  const contextNorm = normalizeLookupTraceText(lookupContext);
+  if (!answerNorm || !contextNorm) {
+    return false;
+  }
+  if (contextNorm.includes(answerNorm)) {
+    return true;
+  }
+
+  const tokens = getLookupTraceTokens(answerText);
+  if (tokens.length >= 2) {
+    return tokens.every((token) => contextNorm.includes(token));
+  }
+  if (tokens.length === 1) {
+    const token = tokens[0];
+    if (/^\d{4}$/.test(token) || token.length >= 6) {
+      return contextNorm.includes(token);
+    }
+  }
+
+  return false;
+}
+
 async function maybeBuildThemeLookupSupport(theme) {
   const emptyLookup = getEmptyThemeLookupSupport();
 
@@ -874,6 +941,17 @@ Lag spørsmål som varierer mellom navnedelene når flere grupper har stoff; bru
 Unngå formuleringer som «vanlig», «populær», «kjent for» og nære varianter.`
       : ""
   }`;
+
+    if (shouldEnforceStrictPersonLookup(theme, lookup)) {
+      prompt += `
+
+HARD REGEL FOR PERSONTEMA:
+- All informasjon skal komme direkte fra lookup-konteksten over.
+- Ikke bruk generell kunnskap, selv om du mener du vet noe om personen.
+- Ikke bruk informasjon fra andre personer med samme eller lignende navn.
+- Hvis en opplysning ikke står tydelig i konteksten, skal du ikke bruke den.
+- Hver fasit må kunne spores direkte til tekst i lookup-konteksten. Hvis fasiten ikke kan gjenfinnes i konteksten, er spørsmålet ugyldig og må forkastes.`;
+    }
   } else if (lookup?.vague) {
     prompt += `
 
@@ -994,7 +1072,8 @@ async function generateQuizWithOpenAI(
       parsed,
       theme,
       questionCount,
-      questionCount
+      questionCount,
+      lookup
     );
     if (validationError) {
       lastValidationError = validationError;
@@ -1033,7 +1112,8 @@ async function generateQuizWithOpenAI(
         { ...parsed, questions: workingQuestions },
         theme,
         workingQuestions.length,
-        workingQuestions.length
+        workingQuestions.length,
+        lookup
       );
       if (afterMemError) {
         lastValidationError = afterMemError;
@@ -1414,6 +1494,56 @@ function getOpenEndedQuestionValidationError(questionText) {
 }
 
 /**
+ * Nytt: defensiv sperre mot tydelig vage eller subjektive formuleringer.
+ * Bevisst enkel: stopper bare noen klassiske uttrykk som ofte gjør spørsmålet
+ * faglig uklart eller vanskelig å dokumentere presist.
+ */
+function getVagueQuestionValidationError(questionText) {
+  const text = String(questionText ?? "").trim();
+  if (!text) {
+    return null;
+  }
+
+  if (
+    /\b(kjent for|ofte brukt|ofte regnet som|mange mener|anses som)\b/i.test(text)
+  ) {
+    return "must not use vague reputation-based phrasing";
+  }
+
+  if (/\b(populær|populaere?|mest populære)\b/i.test(text)) {
+    return "must not use popularity-based phrasing";
+  }
+
+  if (/\b(vakker|silkeaktig|imponerende|spennende)\b/i.test(text)) {
+    return "must not use subjective descriptive phrasing";
+  }
+
+  return null;
+}
+
+/**
+ * Nytt: hard kontroll for person-tema med lookup.
+ * Hvis fasiten ikke kan spores til lookup-konteksten, forkastes spørsmålet.
+ */
+function getLookupTraceabilityValidationError(question, expectedTheme, lookup) {
+  if (!shouldEnforceStrictPersonLookup(expectedTheme, lookup)) {
+    return null;
+  }
+
+  const answerText = String(question?.answer ?? "").trim();
+  const lookupContext = String(lookup?.context ?? "").trim();
+  if (!answerText || !lookupContext) {
+    return "person theme answer must be traceable to lookup context";
+  }
+
+  if (!isAnswerTraceableToLookupContext(answerText, lookupContext)) {
+    return "person theme answer must be traceable to lookup context";
+  }
+
+  return null;
+}
+
+/**
  * Nytt: enkel kvalitetskontroll for å hindre at riktig svar skiller seg for mye ut
  * i lengde/struktur sammenlignet med distraktørene.
  */
@@ -1519,7 +1649,13 @@ function correctAnswerIsUniquelyLongestWords(question) {
   return aw > mw;
 }
 
-function validateGeneratedQuiz(payload, expectedTheme, minQuestions = 3, maxQuestions = 5) {
+function validateGeneratedQuiz(
+  payload,
+  expectedTheme,
+  minQuestions = 3,
+  maxQuestions = 5,
+  lookup = null
+) {
   if (!payload || typeof payload !== "object") {
     return "Invalid payload";
   }
@@ -1565,6 +1701,18 @@ function validateGeneratedQuiz(payload, expectedTheme, minQuestions = 3, maxQues
     const openEndedError = getOpenEndedQuestionValidationError(q.question);
     if (openEndedError) {
       return `question ${i} ${openEndedError}`;
+    }
+    const vagueQuestionError = getVagueQuestionValidationError(q.question);
+    if (vagueQuestionError) {
+      return `question ${i} ${vagueQuestionError}`;
+    }
+    const lookupTraceError = getLookupTraceabilityValidationError(
+      q,
+      expectedTheme,
+      lookup
+    );
+    if (lookupTraceError) {
+      return `question ${i} ${lookupTraceError}`;
     }
     if (!Array.isArray(q.options) || q.options.length !== 4) {
       return `question ${i} must have exactly 4 options`;
