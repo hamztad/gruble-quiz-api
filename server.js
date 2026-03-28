@@ -895,7 +895,19 @@ Lag oppgaver som er typiske i skolen innen dette faget, for eksempel:
 - engelsk: ordforråd, grammatikk og språklig stoff på engelsk som i språkfaget
 - naturfag / historie: faglige begreper og stoff som i læreplanen for faget
 
-Dette endrer ikke kvalitetskravene: hvert spørsmål skal fortsatt ha nøyaktig én klar og dokumenterbar fasit, være fullt selvstendig (ingen skjult kontekst), ikke være avhengig av å se svaralternativene, og ikke være vage eller åpent tolkbare.`;
+Dette endrer ikke kvalitetskravene: hvert spørsmål skal fortsatt ha nøyaktig én klar og dokumenterbar fasit, være fullt selvstendig (ingen skjult kontekst), ikke være avhengig av å se svaralternativene, og ikke være vage eller åpent tolkbare.
+
+Når fagmodus er aktiv, skal spørsmålene fortsatt være ekte quizspørsmål med ett entydig, dokumenterbart svar. Ikke lag åpne skolefaglige spørsmål med flere mulige riktige svar.
+
+Unngå spesielt formuleringer og spørsmålsformer som ofte blir åpne eller diskusjonspregede:
+- "Hva er en viktig del av ..."
+- "Nevn noe som ..."
+- "Hva kjennetegner ..."
+- "Hva er et eksempel på ..." når gruppen ikke er klart lukket
+- "Hvorfor ..."
+- "Hvordan ..."
+
+Hvis du er i tvil om spørsmålet kan ha flere riktige fritekstsvar, skal du forkaste det og lage et mer presist spørsmål med én klar fasit.`;
   }
 
   prompt += `
@@ -1351,6 +1363,35 @@ function getQuestionContextValidationError(questionText) {
 }
 
 /**
+ * Nytt: defensiv sperre mot åpenbart åpne spørsmål som ikke egner seg for entydige fritekstsvar.
+ * Bevisst konservativ: stopper bare klassiske undervisningsformuleringer.
+ */
+function getOpenEndedQuestionValidationError(questionText) {
+  const text = String(questionText ?? "").trim();
+  if (!text) {
+    return null;
+  }
+
+  if (/^hvorfor\b/i.test(text) || /^hvordan\b/i.test(text)) {
+    return "must not be an open why/how question";
+  }
+
+  if (
+    /^hva\s+er\s+en\s+viktig\s+del\s+av\b/i.test(text) ||
+    /^nevn\s+noe\s+som\b/i.test(text) ||
+    /^hva\s+kjennetegner\b/i.test(text)
+  ) {
+    return "must not be an open-ended school question";
+  }
+
+  if (/^hva\s+er\s+et\s+eksempel\s+pa\b/i.test(text.replace(/å/g, "a"))) {
+    return "must not ask for an unconstrained example";
+  }
+
+  return null;
+}
+
+/**
  * Nytt: enkel kvalitetskontroll for å hindre at riktig svar skiller seg for mye ut
  * i lengde/struktur sammenlignet med distraktørene.
  */
@@ -1494,6 +1535,10 @@ function validateGeneratedQuiz(payload, expectedTheme, minQuestions = 3, maxQues
     const questionContextError = getQuestionContextValidationError(q.question);
     if (questionContextError) {
       return `question ${i} ${questionContextError}`;
+    }
+    const openEndedError = getOpenEndedQuestionValidationError(q.question);
+    if (openEndedError) {
+      return `question ${i} ${openEndedError}`;
     }
     if (!Array.isArray(q.options) || q.options.length !== 4) {
       return `question ${i} must have exactly 4 options`;
