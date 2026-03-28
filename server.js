@@ -1363,6 +1363,28 @@ function getQuestionContextValidationError(questionText) {
 }
 
 /**
+ * Nytt: defensiv sperre mot spørsmål som bare gir mening når svaralternativene vises.
+ */
+function getOptionDependentQuestionValidationError(questionText) {
+  const text = String(questionText ?? "").trim();
+  if (!text) {
+    return null;
+  }
+
+  if (
+    /^(hvilken|hvilket|hvilke)\s+av\s+(disse|folg(?:ende|jande))/i.test(
+      text.replace(/ø/g, "o")
+    ) ||
+    /^hvem\s+av\s+disse\b/i.test(text) ||
+    /^hvilket\s+alternativ\b/i.test(text)
+  ) {
+    return "must not depend on answer options";
+  }
+
+  return null;
+}
+
+/**
  * Nytt: defensiv sperre mot åpenbart åpne spørsmål som ikke egner seg for entydige fritekstsvar.
  * Bevisst konservativ: stopper bare klassiske undervisningsformuleringer.
  */
@@ -1535,6 +1557,10 @@ function validateGeneratedQuiz(payload, expectedTheme, minQuestions = 3, maxQues
     const questionContextError = getQuestionContextValidationError(q.question);
     if (questionContextError) {
       return `question ${i} ${questionContextError}`;
+    }
+    const optionDependentError = getOptionDependentQuestionValidationError(q.question);
+    if (optionDependentError) {
+      return `question ${i} ${optionDependentError}`;
     }
     const openEndedError = getOpenEndedQuestionValidationError(q.question);
     if (openEndedError) {

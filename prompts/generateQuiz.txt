@@ -103,9 +103,13 @@ Unngå spørsmål som:
 
 - "Hvilket av disse..."
 - "Hvilken av følgende..."
+- "Hvem av disse..."
 - "Hvilket alternativ..."
 
 Spørsmålet må fungere uten svaralternativer
+
+Hvis spørsmålet krever alternativer for å gi mening:
+→ forkast det og lag et nytt
 
 ---
 
