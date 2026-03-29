@@ -307,6 +307,8 @@ VARIASJON
 - Unngå også gjentakelser av samme kjernefaktum i ny drakt
 - Spre spørsmålene over ulike deler av temaet når det er mulig
 - Ikke bli hengende i én smal detalj eller ett «kontrollspørsmål» bare fordi det er lett å spørre om
+- Hvis brukermeldingen lister flere undertemaer, bruk hvert undertema slik meldingen ber om og fordel spørsmålene jevnt
+- Ikke la to undertemaer ende opp med nesten samme spørsmål bare i ulik innpakning
 - Strever etter det antallet du er bedt om; kvalitet per spørsmål skal fortsatt være høy
 
 ---

@@ -19,6 +19,9 @@ const {
   insertQuizQuestionMemoryRows,
   normalizeFactKey,
   normalizeQuizQuestionText,
+  normalizeQuizAnswerText,
+  normalizedAnswersTooSimilar,
+  normalizedFactKeysTooSimilar,
   normalizedQuestionsTooSimilar,
 } = require("./quizMemory");
 
@@ -111,6 +114,9 @@ const VISUAL_TEN_QUIZ_VARIANT = "visual-10";
 const VISUAL_TEN_QUIZ_QUESTION_COUNT = 10;
 /** Lagres som quiz-radens tema og i JSON; spørsmål 1–9 har egne undertemaer. */
 const VISUAL_TEN_DISPLAY_THEME = "Allmenn quiz";
+const VISUAL_TEN_BATCH_SIZE = 3;
+const VISUAL_TEN_RECENT_QUIZ_COOLING_LIMIT = 4;
+const VISUAL_TEN_IMAGE_PICK_TRIES = 10;
 const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   { theme: "historie", weight: 18, subjectMode: true },
   { theme: "geografi", weight: 16, subjectMode: true },
@@ -127,6 +133,20 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   { theme: "mytologi", weight: 6, subjectMode: false },
   { theme: "verdensarv", weight: 6, subjectMode: false },
 ]);
+
+function getQuizMemoryRuntime(memoryOptions) {
+  const mode =
+    memoryOptions && memoryOptions.mode === QUIZ_MEMORY_MODE.DAILY
+      ? QUIZ_MEMORY_MODE.DAILY
+      : QUIZ_MEMORY_MODE.CUSTOM;
+  const pool =
+    memoryOptions &&
+    memoryOptions.pool &&
+    typeof memoryOptions.pool.query === "function"
+      ? memoryOptions.pool
+      : null;
+  return { mode, pool };
+}
 
 function pickWeightedVisualTenThemePreset() {
   const totalWeight = VISUAL_TEN_THEME_PRESETS.reduce(
@@ -146,36 +166,70 @@ function pickWeightedVisualTenThemePreset() {
   return VISUAL_TEN_THEME_PRESETS[VISUAL_TEN_THEME_PRESETS.length - 1];
 }
 
+function getVisualTenPresetAdjustedWeight(preset, recentThemeCounts, excludedThemes) {
+  if (!preset) {
+    return 0;
+  }
+  if (excludedThemes && excludedThemes.has(preset.theme)) {
+    return 0;
+  }
+  const base = Math.max(0, Number(preset.weight) || 0);
+  const recentCount = Math.max(0, Number(recentThemeCounts?.[preset.theme]) || 0);
+  if (recentCount <= 0) {
+    return base;
+  }
+  return Math.max(0.25, base / (1 + recentCount * 1.15));
+}
+
+function pickWeightedVisualTenThemePresetWithCooling(
+  recentThemeCounts = null,
+  excludedThemes = null
+) {
+  const weights = VISUAL_TEN_THEME_PRESETS.map((preset) =>
+    getVisualTenPresetAdjustedWeight(preset, recentThemeCounts, excludedThemes)
+  );
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  if (totalWeight <= 0) {
+    for (const preset of VISUAL_TEN_THEME_PRESETS) {
+      if (!excludedThemes || !excludedThemes.has(preset.theme)) {
+        return preset;
+      }
+    }
+    return VISUAL_TEN_THEME_PRESETS[0];
+  }
+  let cursor = Math.random() * totalWeight;
+  for (let i = 0; i < VISUAL_TEN_THEME_PRESETS.length; i += 1) {
+    cursor -= weights[i];
+    if (cursor < 0) {
+      return VISUAL_TEN_THEME_PRESETS[i];
+    }
+  }
+  return VISUAL_TEN_THEME_PRESETS[VISUAL_TEN_THEME_PRESETS.length - 1];
+}
+
 /**
  * Trekker undertemaer uten duplikater i samme bilde-quiz.
  * Det gir bredere variasjon i én og samme runde, men ulik miks mellom runder.
  */
-function pickWeightedVisualTenThemePresetsMany(count) {
+function pickWeightedVisualTenThemePresetsMany(count, recentThemeCounts = null) {
   const n = Math.max(0, Math.floor(Number(count)) || 0);
-  const pool = [...VISUAL_TEN_THEME_PRESETS];
   const out = [];
-  while (out.length < n && pool.length > 0) {
-    const totalWeight = pool.reduce(
-      (sum, preset) => sum + Math.max(0, Number(preset.weight) || 0),
-      0
+  const excludedThemes = new Set();
+  while (out.length < n && excludedThemes.size < VISUAL_TEN_THEME_PRESETS.length) {
+    const picked = pickWeightedVisualTenThemePresetWithCooling(
+      recentThemeCounts,
+      excludedThemes
     );
-    if (totalWeight <= 0) {
-      out.push(pool.shift());
-      continue;
+    if (!picked || excludedThemes.has(picked.theme)) {
+      break;
     }
-    let cursor = Math.random() * totalWeight;
-    let pickedIdx = pool.length - 1;
-    for (let i = 0; i < pool.length; i += 1) {
-      cursor -= Math.max(0, Number(pool[i].weight) || 0);
-      if (cursor < 0) {
-        pickedIdx = i;
-        break;
-      }
-    }
-    out.push(pool.splice(pickedIdx, 1)[0]);
+    excludedThemes.add(picked.theme);
+    out.push(picked);
   }
   while (out.length < n) {
-    out.push(pickWeightedVisualTenThemePreset());
+    out.push(
+      pickWeightedVisualTenThemePresetWithCooling(recentThemeCounts, new Set())
+    );
   }
   return out;
 }
@@ -216,7 +270,7 @@ function stripQuestionForPublicClient(q) {
   if (!q || typeof q !== "object") {
     return q;
   }
-  const { answer, fact_key, ...rest } = q;
+  const { answer, fact_key, source_theme, ...rest } = q;
   return rest;
 }
 
@@ -235,10 +289,138 @@ function stripFactKeyFromQuizPayload(payload) {
       if (!q || typeof q !== "object") {
         return q;
       }
-      const { fact_key, ...rest } = q;
+      const { fact_key, source_theme, ...rest } = q;
       return rest;
     }),
   };
+}
+
+async function fetchRecentVisualTenThemeCounts(pool) {
+  if (!pool || typeof pool.query !== "function") {
+    return {};
+  }
+  try {
+    const result = await pool.query(
+      `SELECT questions
+       FROM quizzes
+       WHERE questions::jsonb->>'variant' = $1
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [VISUAL_TEN_QUIZ_VARIANT, VISUAL_TEN_RECENT_QUIZ_COOLING_LIMIT]
+    );
+    const counts = {};
+    for (const row of result.rows) {
+      const payload = getQuizQuestionsPayloadFromRow(row);
+      const qs = Array.isArray(payload?.questions) ? payload.questions : [];
+      for (const q of qs) {
+        const theme = String(q?.source_theme ?? "").trim();
+        if (!theme) {
+          continue;
+        }
+        counts[theme] = (counts[theme] || 0) + 1;
+      }
+    }
+    return counts;
+  } catch (err) {
+    console.warn(
+      "[visual-10] recent theme counts unavailable:",
+      err && typeof err.message === "string" ? err.message : String(err)
+    );
+    return {};
+  }
+}
+
+function chunkArray(values, size) {
+  const list = Array.isArray(values) ? values : [];
+  const n = Math.max(1, Math.floor(Number(size)) || 1);
+  const out = [];
+  for (let i = 0; i < list.length; i += n) {
+    out.push(list.slice(i, i + n));
+  }
+  return out;
+}
+
+function buildVisualTenBatchUserPrompt(slots, existingQuestions, difficulty) {
+  const diffNorm = normalizeQuizDifficulty(difficulty);
+  const diffHuman =
+    diffNorm === "easy" ? "lett" : diffNorm === "hard" ? "vanskelig" : "normal";
+  const slotLines = slots
+    .map(
+      (slot, idx) =>
+        `${idx + 1}. ${JSON.stringify(slot.theme)} (${slot.subjectMode ? "fagmodus" : "allmennmodus"})`
+    )
+    .join("\n");
+  const existingLines =
+    Array.isArray(existingQuestions) && existingQuestions.length > 0
+      ? existingQuestions
+          .map(
+            (q, idx) =>
+              `${idx + 1}. undertema=${JSON.stringify(String(q?.source_theme ?? ""))} spørsmål=${JSON.stringify(String(q?.question ?? ""))} fasit=${JSON.stringify(String(q?.answer ?? ""))} fact_key=${JSON.stringify(String(q?.fact_key ?? ""))}`
+          )
+          .join("\n")
+      : "";
+
+  return `Du lager delspørsmål 1–9 i en allmenn bilde-quiz.
+
+Temaet for hele JSON-svaret skal være eksakt ${JSON.stringify(VISUAL_TEN_DISPLAY_THEME)}.
+Vanskegrad: ${diffHuman}.
+
+Lag nøyaktig ${slots.length} flervalgsoppgaver, og bruk hvert undertema nøyaktig én gang:
+${slotLines}
+
+For hvert spørsmål i "questions":
+- bruk nøyaktig ett av undertemaene over
+- legg inn feltet "source_theme" med eksakt undertema-streng
+- legg inn feltene id, question, options, answer, fact_key
+- fact_key er obligatorisk og skal beskrive kjernefaktumet
+- spørsmålene må være fullt selvstendige, dokumenterbare og ha én klar fasit
+- ikke knytt spørsmålene til illustrasjonsbildet; det kommer først i spørsmål 10
+
+Fagmodus betyr at undertemaet skal tolkes som skolefag eller undervisningsstoff, ikke løs trivia.
+Allmennmodus betyr vanlig allmennkunnskap.
+
+Variasjon er svært viktig:
+- ett spørsmål per undertema, ikke flere vinkler på samme detalj
+- ikke gjenbruk samme kjernefaktum mellom undertemaene
+- unngå overbrukte kontrollspørsmål og smal trivia når bredere, mer relevante fakta finnes
+- spre spørsmålene over ulike deler av undertemaene når mulig
+
+${
+  existingLines
+    ? `Allerede brukt i denne quizen (ikke gjenta samme faktum, formulering eller nærvariant):
+${existingLines}
+`
+    : ""
+}
+Returner KUN gyldig JSON med formen:
+{"theme":"${VISUAL_TEN_DISPLAY_THEME}","questions":[{"id":1,"source_theme":"...","question":"...","options":["...","...","...","..."],"answer":"...","fact_key":"..."}]}`;
+}
+
+function getVisualTenBatchValidationError(payload, slots) {
+  const questions = Array.isArray(payload?.questions) ? payload.questions : [];
+  if (questions.length !== slots.length) {
+    return `visual-10 batch expected ${slots.length} questions`;
+  }
+  const allowedThemes = new Set(slots.map((slot) => String(slot.theme).trim()));
+  const seenThemes = new Set();
+  for (let i = 0; i < questions.length; i += 1) {
+    const q = questions[i];
+    const sourceTheme = String(q?.source_theme ?? "").trim();
+    if (!sourceTheme) {
+      return `visual-10 batch question ${i + 1} missing source_theme`;
+    }
+    if (!allowedThemes.has(sourceTheme)) {
+      return `visual-10 batch question ${i + 1} source_theme invalid`;
+    }
+    if (seenThemes.has(sourceTheme)) {
+      return `visual-10 batch source_theme repeated: ${sourceTheme}`;
+    }
+    seenThemes.add(sourceTheme);
+  }
+  if (seenThemes.size !== allowedThemes.size) {
+    return "visual-10 batch missing one or more source themes";
+  }
+  return null;
 }
 
 function validateThemeForQuizInput(theme) {
@@ -1373,9 +1555,15 @@ async function generateQuizWithOpenAI(
   questionCount,
   memoryOptions = null,
   subjectMode = false,
-  difficulty = "easy"
+  difficulty = "easy",
+  generationOptions = null
 ) {
+  const startedAt = Date.now();
   const diffNorm = normalizeQuizDifficulty(difficulty);
+  const skipDecorativeImages =
+    generationOptions &&
+    typeof generationOptions === "object" &&
+    generationOptions.skipDecorativeImages === true;
   console.log(`[quiz mode] subjectMode=${subjectMode ? "true" : "false"}`);
   console.log(`[quiz mode] difficulty=${diffNorm}`);
   /* Nytt: i fagmodus hopper vi over lookup for å unngå at tvetydige ord som "norsk"
@@ -1566,23 +1754,28 @@ async function generateQuizWithOpenAI(
 
       let finalQuestions = accumulated;
       let sharedImage = null;
-      try {
-        const decorated = await attachDecorativeQuizImages(
-          theme,
-          lookup,
-          accumulated
-        );
-        finalQuestions = decorated.questions;
-        sharedImage = decorated.sharedImage;
-      } catch (imgErr) {
-        console.warn(
-          "[quiz image] attach failed:",
-          imgErr && typeof imgErr.message === "string"
-            ? imgErr.message
-            : String(imgErr)
-        );
+      if (!skipDecorativeImages) {
+        try {
+          const decorated = await attachDecorativeQuizImages(
+            theme,
+            lookup,
+            accumulated
+          );
+          finalQuestions = decorated.questions;
+          sharedImage = decorated.sharedImage;
+        } catch (imgErr) {
+          console.warn(
+            "[quiz image] attach failed:",
+            imgErr && typeof imgErr.message === "string"
+              ? imgErr.message
+              : String(imgErr)
+          );
+        }
       }
 
+      console.log(
+        `[quiz timing] theme=${JSON.stringify(theme)} questions=${questionCount} skipDecorativeImages=${skipDecorativeImages ? "true" : "false"} duration_ms=${Date.now() - startedAt}`
+      );
       return {
         theme: resolvedTheme,
         questions: finalQuestions,
@@ -1591,9 +1784,130 @@ async function generateQuizWithOpenAI(
     }
   }
 
+  console.log(
+    `[quiz timing] theme=${JSON.stringify(theme)} questions=${questionCount} failed duration_ms=${Date.now() - startedAt}`
+  );
   throw new Error(
     `Could not produce ${questionCount} valid unique questions: ${lastValidationError || "unknown error"}`
   );
+}
+
+async function generateVisualTenQuestionBatch(
+  openai,
+  model,
+  slots,
+  priorAcceptedQuestions,
+  memoryOptions = null,
+  difficulty = "easy"
+) {
+  const diffNorm = normalizeQuizDifficulty(difficulty);
+  const { mode: memMode, pool: memoryPool } = getQuizMemoryRuntime(memoryOptions);
+  const lookup = getEmptyThemeLookupSupport();
+  let accepted = [];
+  let pendingSlots = [...slots];
+  let lastError = null;
+  const maxAttempts = 10;
+  const batchStartedAt = Date.now();
+
+  for (let attempt = 0; attempt < maxAttempts && pendingSlots.length > 0; attempt += 1) {
+    const prompt = buildVisualTenBatchUserPrompt(
+      pendingSlots,
+      [...(priorAcceptedQuestions || []), ...accepted],
+      diffNorm
+    );
+    let parsed;
+    try {
+      parsed = await parseJsonChatCompletion(
+        openai.chat.completions.create({
+          model,
+          messages: [
+            {
+              role: "system",
+              content: buildGenerateQuizSystemContent(diffNorm),
+            },
+            { role: "user", content: prompt },
+          ],
+          response_format: { type: "json_object" },
+        })
+      );
+    } catch (err) {
+      lastError =
+        err && typeof err.message === "string"
+          ? err.message
+          : "visual-10 batch OpenAI call failed";
+      continue;
+    }
+
+    const batchValidationError = validateGeneratedQuiz(
+      parsed,
+      VISUAL_TEN_DISPLAY_THEME,
+      pendingSlots.length,
+      pendingSlots.length,
+      lookup,
+      false,
+      diffNorm,
+      { skipLookupSensitive: true }
+    );
+    if (batchValidationError) {
+      lastError = batchValidationError;
+      console.log(
+        `[visual-10 batch] attempt=${attempt + 1} validation=${JSON.stringify(batchValidationError)}`
+      );
+      continue;
+    }
+
+    const sourceThemeError = getVisualTenBatchValidationError(parsed, pendingSlots);
+    if (sourceThemeError) {
+      lastError = sourceThemeError;
+      console.log(
+        `[visual-10 batch] attempt=${attempt + 1} sourceThemeValidation=${JSON.stringify(sourceThemeError)}`
+      );
+      continue;
+    }
+
+    const normalizedQuestions = parsed.questions.map((q, idx) => ({
+      ...q,
+      id: idx + 1,
+      source_theme: String(q?.source_theme ?? "").trim(),
+    }));
+    const shuffled = normalizedQuestions.map(shuffleQuestionOptions);
+    const memResult = await filterQuizQuestionsAgainstMemory(
+      memoryPool,
+      shuffled,
+      VISUAL_TEN_DISPLAY_THEME,
+      memMode,
+      [...(priorAcceptedQuestions || []), ...accepted]
+    );
+    if (memResult.questions.length === 0) {
+      lastError = "all visual-10 batch questions rejected as duplicates";
+      console.log(
+        `[visual-10 batch] attempt=${attempt + 1} memoryRejected=all pending=${pendingSlots.length}`
+      );
+      continue;
+    }
+
+    accepted = [...accepted, ...memResult.questions];
+    const acceptedThemes = new Set(
+      accepted.map((q) => String(q?.source_theme ?? "").trim()).filter(Boolean)
+    );
+    pendingSlots = pendingSlots.filter((slot) => !acceptedThemes.has(String(slot.theme)));
+    if (memResult.rejected > 0) {
+      console.log(
+        `[visual-10 batch] attempt=${attempt + 1} accepted=${memResult.questions.length} rejected=${memResult.rejected} remaining=${pendingSlots.length}`
+      );
+    }
+  }
+
+  if (accepted.length !== slots.length) {
+    throw new Error(
+      `visual-10 batch failed: ${lastError || "could not fill all undertema slots"}`
+    );
+  }
+
+  console.log(
+    `[visual-10 batch timing] slots=${slots.length} duration_ms=${Date.now() - batchStartedAt}`
+  );
+  return accepted;
 }
 
 /**
@@ -1677,8 +1991,8 @@ Returner KUN JSON med "theme" og "questions".`;
 }
 
 /**
- * Bilde-10-variant: ni spørsmål med uavhengige vektede undertemaer, illustrasjon valgt separat,
- * spørsmål 10 kun om bildet. Grunnmotoren (generateQuizWithOpenAI) kalles per spørsmål.
+ * Bilde-10-variant: ni spørsmål i små batcher med undertema-kjøling, illustrasjon valgt separat,
+ * og spørsmål 10 kun om bildet.
  */
 async function buildVisualTenQuizAttempt(
   openai,
@@ -1686,41 +2000,56 @@ async function buildVisualTenQuizAttempt(
   memoryOptions = null,
   difficulty = "easy"
 ) {
+  const attemptStartedAt = Date.now();
   const diffNorm = normalizeQuizDifficulty(difficulty);
   const displayTheme = VISUAL_TEN_DISPLAY_THEME;
-  const nineSlots = pickWeightedVisualTenThemePresetsMany(9);
+  const { mode: memMode, pool: memoryPool } = getQuizMemoryRuntime(memoryOptions);
+  const recentThemeCounts = await fetchRecentVisualTenThemeCounts(memoryPool);
+  console.log(
+    `[visual-10] recentThemeCounts=${JSON.stringify(recentThemeCounts)}`
+  );
+  const nineSlots = pickWeightedVisualTenThemePresetsMany(9, recentThemeCounts);
+  const batchPlans = chunkArray(nineSlots, VISUAL_TEN_BATCH_SIZE);
   const nineClean = [];
 
-  for (let i = 0; i < nineSlots.length; i += 1) {
-    const slot = nineSlots[i];
+  for (let batchIdx = 0; batchIdx < batchPlans.length; batchIdx += 1) {
+    const slots = batchPlans[batchIdx];
     console.log(
-      `[visual-10] slot ${i + 1}/9 theme=${JSON.stringify(slot.theme)} subjectMode=${slot.subjectMode ? "true" : "false"}`
+      `[visual-10] batch ${batchIdx + 1}/${batchPlans.length} slots=${JSON.stringify(slots.map((slot) => ({
+        theme: slot.theme,
+        subjectMode: slot.subjectMode === true,
+      })))}`
     );
-    const mini = await generateQuizWithOpenAI(
+    const batchQuestions = await generateVisualTenQuestionBatch(
       openai,
       model,
-      slot.theme,
-      1,
+      slots,
+      nineClean,
       memoryOptions,
-      slot.subjectMode === true,
       difficulty
     );
-    const raw = mini.questions?.[0];
-    if (!raw || typeof raw !== "object") {
-      throw new Error(`visual-10: no question produced for slot ${i + 1}`);
-    }
-    const { image, ...rest } = raw;
-    nineClean.push(rest);
+    nineClean.push(...batchQuestions);
   }
 
-  const MAX_IMAGE_PICK_TRIES = 24;
+  const imageLookupCache = new Map();
   let shared = null;
-  for (let a = 0; a < MAX_IMAGE_PICK_TRIES && !shared; a += 1) {
-    const imgPreset = pickWeightedVisualTenThemePreset();
-    const imgLookup = imgPreset.subjectMode
-      ? getEmptyThemeLookupSupport()
-      : await maybeBuildThemeLookupSupport(imgPreset.theme);
+  for (let a = 0; a < VISUAL_TEN_IMAGE_PICK_TRIES && !shared; a += 1) {
+    const excludedThemes = new Set(nineSlots.map((slot) => slot.theme));
+    const imgPreset = pickWeightedVisualTenThemePresetWithCooling(
+      recentThemeCounts,
+      excludedThemes
+    );
+    let imgLookup = imageLookupCache.get(imgPreset.theme);
+    if (!imgLookup) {
+      imgLookup = imgPreset.subjectMode
+        ? getEmptyThemeLookupSupport()
+        : await maybeBuildThemeLookupSupport(imgPreset.theme);
+      imageLookupCache.set(imgPreset.theme, imgLookup);
+    }
     shared = await pickSharedDecorativeImage(imgPreset.theme, imgLookup, "");
+    console.log(
+      `[visual-10 image] attempt=${a + 1}/${VISUAL_TEN_IMAGE_PICK_TRIES} theme=${JSON.stringify(imgPreset.theme)} found=${shared ? "true" : "false"}`
+    );
   }
   if (!shared || typeof shared.url !== "string" || !shared.url.trim()) {
     throw new Error(
@@ -1728,13 +2057,33 @@ async function buildVisualTenQuizAttempt(
     );
   }
 
-  const q10 = await generateVisualClimaxQuestion(
-    openai,
-    model,
-    displayTheme,
-    shared,
-    diffNorm
-  );
+  let q10 = null;
+  for (let q10Attempt = 0; q10Attempt < 4 && !q10; q10Attempt += 1) {
+    const candidate = await generateVisualClimaxQuestion(
+      openai,
+      model,
+      displayTheme,
+      shared,
+      diffNorm
+    );
+    const deduped = await filterQuizQuestionsAgainstMemory(
+      memoryPool,
+      [candidate],
+      displayTheme,
+      memMode,
+      nineClean
+    );
+    if (deduped.questions.length > 0) {
+      q10 = deduped.questions[0];
+      break;
+    }
+    console.log(
+      `[visual-10 climax] duplicateRejected attempt=${q10Attempt + 1}/4`
+    );
+  }
+  if (!q10) {
+    throw new Error("Could not generate unique visual climax question");
+  }
 
   const nineRenumbered = nineClean.map((q, idx) => ({
     ...q,
@@ -1763,6 +2112,9 @@ async function buildVisualTenQuizAttempt(
     );
   }
 
+  console.log(
+    `[visual-10 timing] total_duration_ms=${Date.now() - attemptStartedAt}`
+  );
   return {
     theme: fullPayload.theme,
     questions: allQuestions,
@@ -1777,6 +2129,7 @@ async function generateVisualTenQuizWithOpenAI(
   memoryOptions = null,
   difficulty = "easy"
 ) {
+  const startedAt = Date.now();
   let lastErr = null;
   const maxAttempts = 3;
 
@@ -1787,12 +2140,16 @@ async function generateVisualTenQuizWithOpenAI(
           `[visual-10] retrying full generation attempt=${attempt + 1}/${maxAttempts}`
         );
       }
-      return await buildVisualTenQuizAttempt(
+      const quiz = await buildVisualTenQuizAttempt(
         openai,
         model,
         memoryOptions,
         difficulty
       );
+      console.log(
+        `[visual-10 total timing] attempts=${attempt + 1} duration_ms=${Date.now() - startedAt}`
+      );
+      return quiz;
     } catch (err) {
       lastErr = err;
       console.log(
@@ -1803,6 +2160,9 @@ async function generateVisualTenQuizWithOpenAI(
     }
   }
 
+  console.log(
+    `[visual-10 total timing] failed duration_ms=${Date.now() - startedAt}`
+  );
   throw lastErr || new Error("Could not generate visual-10 quiz");
 }
 
@@ -2681,7 +3041,7 @@ function validateGeneratedQuiz(
     }
     normalizedRows.push({
       question: normalizeQuizQuestionText(q.question),
-      answer: normalizeQuizQuestionText(q.answer),
+      answer: normalizeQuizAnswerText(q.answer),
       factKey: fkNorm,
     });
   }
@@ -2691,10 +3051,22 @@ function validateGeneratedQuiz(
     for (let j = i + 1; j < normalizedRows.length; j += 1) {
       const a = normalizedRows[i];
       const b = normalizedRows[j];
-      if (a.factKey && b.factKey && a.factKey === b.factKey) {
+      if (a.factKey && b.factKey && normalizedFactKeysTooSimilar(a.factKey, b.factKey)) {
         return `quiz: questions ${i + 1} and ${j + 1} reuse the same fact_key`;
       }
-      if (normalizedQuestionsTooSimilar(a.question, b.question, QUIZ_MEMORY_MODE.DAILY)) {
+      const questionsTooClose = normalizedQuestionsTooSimilar(
+        a.question,
+        b.question,
+        QUIZ_MEMORY_MODE.DAILY
+      );
+      const answersTooClose = normalizedAnswersTooSimilar(
+        a.answer,
+        b.answer,
+        QUIZ_MEMORY_MODE.DAILY
+      );
+      const factKeysTooClose =
+        a.factKey && b.factKey && normalizedFactKeysTooSimilar(a.factKey, b.factKey);
+      if (questionsTooClose && (answersTooClose || factKeysTooClose)) {
         return `quiz: questions ${i + 1} and ${j + 1} are too similar`;
       }
     }

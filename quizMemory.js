@@ -79,6 +79,72 @@ function normalizeFactKey(raw) {
   return segments.join("|");
 }
 
+function factKeySimilarityRatio(a, b) {
+  if (!a || !b) {
+    return 0;
+  }
+  if (a === b) {
+    return 1;
+  }
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen <= 0) {
+    return 0;
+  }
+  return 1 - levenshteinDistance(a, b) / maxLen;
+}
+
+function normalizedFactKeysTooSimilar(fkA, fkB) {
+  if (!fkA || !fkB) {
+    return false;
+  }
+  if (fkA === fkB) {
+    return true;
+  }
+  const a = String(fkA).split("|").filter(Boolean);
+  const b = String(fkB).split("|").filter(Boolean);
+  if (a.length === 0 || b.length === 0) {
+    return false;
+  }
+
+  const sharedPrefix = [];
+  const minLen = Math.min(a.length, b.length);
+  for (let i = 0; i < minLen; i += 1) {
+    if (a[i] !== b[i]) {
+      break;
+    }
+    sharedPrefix.push(a[i]);
+  }
+  if (sharedPrefix.length >= 2) {
+    const tailA = a.slice(sharedPrefix.length).join("|");
+    const tailB = b.slice(sharedPrefix.length).join("|");
+    if (!tailA || !tailB) {
+      return true;
+    }
+    if (factKeySimilarityRatio(tailA, tailB) >= 0.86) {
+      return true;
+    }
+  }
+
+  if (a.length === b.length) {
+    let exactMatches = 0;
+    let nearMatches = 0;
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] === b[i]) {
+        exactMatches += 1;
+        continue;
+      }
+      if (factKeySimilarityRatio(a[i], b[i]) >= 0.9) {
+        nearMatches += 1;
+      }
+    }
+    if (exactMatches >= a.length - 1 && exactMatches + nearMatches === a.length) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function logMemory(line) {
   console.log(`[quiz memory] ${line}`);
 }
@@ -226,8 +292,11 @@ function findMemoryConflict(normQ, normA, fkNorm, rows, mode) {
   if (fkNorm) {
     for (let i = 0; i < rows.length; i += 1) {
       const r = rows[i];
-      if (r.factKey && r.factKey === fkNorm) {
-        return { reason: MEMORY_REJECT_REASON.FACT_KEY, detail: "fact_key_match" };
+      if (r.factKey && normalizedFactKeysTooSimilar(r.factKey, fkNorm)) {
+        return {
+          reason: MEMORY_REJECT_REASON.FACT_KEY,
+          detail: r.factKey === fkNorm ? "fact_key_match" : "fact_key_fuzzy_match",
+        };
       }
     }
   }
@@ -486,4 +555,5 @@ module.exports = {
   insertQuizQuestionMemoryRows,
   normalizedQuestionsTooSimilar,
   normalizedAnswersTooSimilar,
+  normalizedFactKeysTooSimilar,
 };
