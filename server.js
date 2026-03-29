@@ -106,6 +106,8 @@ const THEME_INPUT_MAX_WORDS = 3;
 /** Lagres som `variant` i questions JSONB; skiller bilde-10-quiz fra standard flyt. */
 const VISUAL_TEN_QUIZ_VARIANT = "visual-10";
 const VISUAL_TEN_QUIZ_QUESTION_COUNT = 10;
+/** Lagres som quiz-radens tema og i JSON; spørsmål 1–9 har egne undertemaer. */
+const VISUAL_TEN_DISPLAY_THEME = "Allmenn quiz";
 const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   { theme: "historie", weight: 18, subjectMode: true },
   { theme: "geografi", weight: 16, subjectMode: true },
@@ -134,6 +136,16 @@ function pickWeightedVisualTenThemePreset() {
     }
   }
   return VISUAL_TEN_THEME_PRESETS[VISUAL_TEN_THEME_PRESETS.length - 1];
+}
+
+/** N uavhengige vektede trekk — gir variasjon og hyppigere «populære» undertemaer i samme runde. */
+function pickWeightedVisualTenThemePresetsMany(count) {
+  const n = Math.max(0, Math.floor(Number(count)) || 0);
+  const out = [];
+  for (let i = 0; i < n; i += 1) {
+    out.push(pickWeightedVisualTenThemePreset());
+  }
+  return out;
 }
 
 function isValidVisualTenQuizPayload(payload) {
@@ -1514,26 +1526,26 @@ async function generateQuizWithOpenAI(
 }
 
 /**
- * Ett siste spørsmål knyttet til delt bilde (visual-10-variant). Samme validering som øvrige spørsmål.
+ * Spørsmål 10: kun knyttet til illustrasjonsbildet (ikke til quizens øvrige undertemaer).
  */
 async function generateVisualClimaxQuestion(
   openai,
   model,
-  theme,
+  displayTheme,
   sharedImage,
-  lookup,
-  subjectMode,
   diffNorm
 ) {
-  const themeStr = String(theme ?? "").trim();
+  const themeStr = String(displayTheme ?? "").trim();
   const themeJson = JSON.stringify(themeStr);
   const title = String(sharedImage?.title ?? "").trim();
   const credit = String(sharedImage?.credit ?? "").trim();
   const url = String(sharedImage?.url ?? "").trim();
 
-  const userPrompt = `Du genererer siste spørsmål (nr. 10) i en bildebåren quiz om temaet ${themeJson}.
+  const userPrompt = `Du genererer spørsmål nr. 10 i en allmenn bilde-quiz.
 
-Spørsmål 1–9 i quizen handler om temaet generelt. Dette spørsmålet skal være tydelig knyttet til motivet i quizens felles illustrasjonsbilde, med trygg og dokumenterbar kunnskap (f.eks. kjent sted, byggverk, person, naturtype eller gjenstand som rimelig kan knyttes til bildet ut fra tittel og alminnelig kunnskap). Ikke finn på detaljer du ikke kan forsvare; ikke spør om pikselnivå du ikke kan slå fast.
+Spørsmål 1–9 i samme quiz er vanlig flervalgsquiz med varierende undertemaer (allmennkunnskap). De er ikke knyttet til illustrasjonsbildet.
+
+Spørsmål 10 er det eneste som skal knyttes til bildet: bruk motivet som premiss — spør om noe som er tydelig synlig, eller som er trygt og dokumenterbart knyttet til motivet ut fra bildets tittel og alminnelig kunnskap (sted, byggverk, person, naturtype, gjenstand osv.). Ikke finn på detaljer du ikke kan forsvare; ikke spør om pikselnivå du ikke kan slå fast.
 
 Bildemetadata fra kilde:
 - tittel: ${JSON.stringify(title)}
@@ -1549,6 +1561,7 @@ Krav:
 
 Returner KUN JSON med "theme" og "questions".`;
 
+  const climaxLookup = getEmptyThemeLookupSupport();
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const parsed = await parseJsonChatCompletion(
       openai.chat.completions.create({
@@ -1568,9 +1581,10 @@ Returner KUN JSON med "theme" og "questions".`;
       themeStr,
       1,
       1,
-      lookup,
-      subjectMode,
-      diffNorm
+      climaxLookup,
+      false,
+      diffNorm,
+      { skipLookupSensitive: true }
     );
     if (err) {
       console.log(
@@ -1592,71 +1606,62 @@ Returner KUN JSON med "theme" og "questions".`;
 }
 
 /**
- * Bilde-10-variant: 9 spørsmål fra grunnmotor + delt bilde + ett bildeklimaks-spørsmål.
- * Grunnmotoren (generateQuizWithOpenAI) endres ikke; dette er en tynn wrapper.
+ * Bilde-10-variant: ni spørsmål med uavhengige vektede undertemaer, illustrasjon valgt separat,
+ * spørsmål 10 kun om bildet. Grunnmotoren (generateQuizWithOpenAI) kalles per spørsmål.
  */
 async function buildVisualTenQuizAttempt(
   openai,
   model,
-  theme,
   memoryOptions = null,
-  subjectMode = false,
   difficulty = "easy"
 ) {
   const diffNorm = normalizeQuizDifficulty(difficulty);
-  const ninePack = await generateQuizWithOpenAI(
-    openai,
-    model,
-    theme,
-    9,
-    memoryOptions,
-    subjectMode,
-    difficulty
-  );
+  const displayTheme = VISUAL_TEN_DISPLAY_THEME;
+  const nineSlots = pickWeightedVisualTenThemePresetsMany(9);
+  const nineClean = [];
 
-  const lookup = subjectMode
-    ? getEmptyThemeLookupSupport()
-    : await maybeBuildThemeLookupSupport(theme);
-
-  let nineClean = ninePack.questions.map((q) => {
-    const { image, ...rest } = q;
-    return rest;
-  });
-  const contextText = nineClean
-    .map((q) => String(q?.question ?? "").trim())
-    .filter(Boolean)
-    .join(" ");
-
-  let shared = ninePack.sharedImage;
-  if (!shared) {
-    shared = await pickSharedDecorativeImage(theme, lookup, contextText);
-  }
-  if (!shared) {
-    const decorated = await attachDecorativeQuizImages(
-      theme,
-      lookup,
-      nineClean
+  for (let i = 0; i < nineSlots.length; i += 1) {
+    const slot = nineSlots[i];
+    console.log(
+      `[visual-10] slot ${i + 1}/9 theme=${JSON.stringify(slot.theme)} subjectMode=${slot.subjectMode ? "true" : "false"}`
     );
-    shared = decorated.sharedImage;
-    nineClean = decorated.questions.map((row, i) => {
-      const base = nineClean[i] || {};
-      const { image, ...rest } = row;
-      return { ...base, ...rest };
-    });
+    const mini = await generateQuizWithOpenAI(
+      openai,
+      model,
+      slot.theme,
+      1,
+      memoryOptions,
+      slot.subjectMode === true,
+      difficulty
+    );
+    const raw = mini.questions?.[0];
+    if (!raw || typeof raw !== "object") {
+      throw new Error(`visual-10: no question produced for slot ${i + 1}`);
+    }
+    const { image, ...rest } = raw;
+    nineClean.push(rest);
+  }
+
+  const MAX_IMAGE_PICK_TRIES = 24;
+  let shared = null;
+  for (let a = 0; a < MAX_IMAGE_PICK_TRIES && !shared; a += 1) {
+    const imgPreset = pickWeightedVisualTenThemePreset();
+    const imgLookup = imgPreset.subjectMode
+      ? getEmptyThemeLookupSupport()
+      : await maybeBuildThemeLookupSupport(imgPreset.theme);
+    shared = await pickSharedDecorativeImage(imgPreset.theme, imgLookup, "");
   }
   if (!shared || typeof shared.url !== "string" || !shared.url.trim()) {
     throw new Error(
-      "Could not resolve a shared image for visual-10 quiz (try another theme)"
+      "Could not resolve a shared image for visual-10 quiz (try again)"
     );
   }
 
   const q10 = await generateVisualClimaxQuestion(
     openai,
     model,
-    theme,
+    displayTheme,
     shared,
-    lookup,
-    subjectMode,
     diffNorm
   );
 
@@ -1667,17 +1672,19 @@ async function buildVisualTenQuizAttempt(
   const allQuestions = [...nineRenumbered, q10];
 
   const fullPayload = {
-    theme: String(ninePack.theme ?? theme).trim(),
+    theme: displayTheme,
     questions: allQuestions,
   };
+  const packageLookup = getEmptyThemeLookupSupport();
   const finalErr = validateGeneratedQuiz(
     fullPayload,
-    String(theme).trim(),
+    displayTheme,
     10,
     10,
-    lookup,
-    subjectMode,
-    diffNorm
+    packageLookup,
+    false,
+    diffNorm,
+    { skipLookupSensitive: true }
   );
   if (finalErr) {
     throw new Error(
@@ -1696,9 +1703,7 @@ async function buildVisualTenQuizAttempt(
 async function generateVisualTenQuizWithOpenAI(
   openai,
   model,
-  theme,
   memoryOptions = null,
-  subjectMode = false,
   difficulty = "easy"
 ) {
   let lastErr = null;
@@ -1714,9 +1719,7 @@ async function generateVisualTenQuizWithOpenAI(
       return await buildVisualTenQuizAttempt(
         openai,
         model,
-        theme,
         memoryOptions,
-        subjectMode,
         difficulty
       );
     } catch (err) {
@@ -2457,8 +2460,13 @@ function validateGeneratedQuiz(
   maxQuestions = 5,
   lookup = null,
   subjectMode = false,
-  difficulty = "easy"
+  difficulty = "easy",
+  validationOptions = null
 ) {
+  const skipLookupSensitive =
+    validationOptions &&
+    typeof validationOptions === "object" &&
+    validationOptions.skipLookupSensitive === true;
   if (!payload || typeof payload !== "object") {
     return "Invalid payload";
   }
@@ -2524,21 +2532,23 @@ function validateGeneratedQuiz(
     if (tooEasyError) {
       return `question ${i} ${tooEasyError}`;
     }
-    const aliasHallucinationError = getAlternateNameHallucinationValidationError(
-      q,
-      lookup,
-      subjectMode
-    );
-    if (aliasHallucinationError) {
-      return `question ${i} ${aliasHallucinationError}`;
-    }
-    const lookupTraceError = getLookupTraceabilityValidationError(
-      q,
-      expectedTheme,
-      lookup
-    );
-    if (lookupTraceError) {
-      return `question ${i} ${lookupTraceError}`;
+    if (!skipLookupSensitive) {
+      const aliasHallucinationError = getAlternateNameHallucinationValidationError(
+        q,
+        lookup,
+        subjectMode
+      );
+      if (aliasHallucinationError) {
+        return `question ${i} ${aliasHallucinationError}`;
+      }
+      const lookupTraceError = getLookupTraceabilityValidationError(
+        q,
+        expectedTheme,
+        lookup
+      );
+      if (lookupTraceError) {
+        return `question ${i} ${lookupTraceError}`;
+      }
     }
     if (!Array.isArray(q.options) || q.options.length !== 4) {
       return `question ${i} must have exactly 4 options`;
@@ -2730,8 +2740,6 @@ app.post("/api/internal/generate-visual-10-quiz", async (req, res) => {
 
   const openai = new OpenAI({ apiKey });
   const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
-  const preset = pickWeightedVisualTenThemePreset();
-  const theme = preset.theme;
 
   const quizSourceRaw =
     typeof req.body?.quizSource === "string"
@@ -2744,7 +2752,6 @@ app.post("/api/internal/generate-visual-10-quiz", async (req, res) => {
       ? QUIZ_MEMORY_MODE.DAILY
       : QUIZ_MEMORY_MODE.CUSTOM;
 
-  const subjectMode = preset.subjectMode === true;
   const difficulty = "normal";
 
   try {
@@ -2767,12 +2774,10 @@ app.post("/api/internal/generate-visual-10-quiz", async (req, res) => {
       parsed = await generateVisualTenQuizWithOpenAI(
         openai,
         model,
-        theme,
         {
           pool,
           mode: memoryMode,
         },
-        subjectMode,
         difficulty
       );
     } catch (genErr) {

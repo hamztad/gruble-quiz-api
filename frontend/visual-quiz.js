@@ -191,12 +191,10 @@ function stripAnswerPrefixFromFeedback(answer, feedback) {
   return original;
 }
 
-function loadingSpinnerMarkup() {
-  return '<span class="loading-spinner" role="status" aria-label="Laster"></span>';
-}
-
 function loadingInlineRow(text) {
-  return `<div class="loading-inline">${loadingSpinnerMarkup()}<span>${text}</span></div>`;
+  return `<div class="loading-inline" role="status"><span class="vq-spinner" aria-hidden="true"></span><span class="sr-only">${escapeHtml(
+    text
+  )}</span></div>`;
 }
 
 function getQuestionOverride(question) {
@@ -615,18 +613,18 @@ async function submitWritten(question, answer, qs) {
 async function loadVisualQuiz() {
   const el = document.getElementById("visual-app");
   el.innerHTML =
-    "<p class=\"empty-state\"><span class=\"vq-spinner\" aria-hidden=\"true\"></span> Laster quiz…</p>";
+    "<p class=\"empty-state\"><span class=\"vq-spinner\" aria-hidden=\"true\"></span> Laster…</p>";
   try {
     const response = await fetch(`${API_BASE}/api/quiz/visual-today`);
     if (!response.ok) {
       el.innerHTML =
-        "<p class=\"empty-state\">Ingen lagret bilde-quiz ennå. Trykk «Start ny quiz» over.</p>";
+        "<p class=\"empty-state\">Ingen lagret runde. Trykk Start.</p>";
       return false;
     }
     const data = await response.json();
     if (!isValidVisualQuizPayload(data)) {
       el.innerHTML =
-        "<p class=\"empty-state\">Fant ingen gyldig bilde-quiz med 10 spørsmål. Start en ny runde.</p>";
+        "<p class=\"empty-state\">Ugyldig runde. Start på nytt.</p>";
       return false;
     }
     state.theme = data.theme || "";
@@ -650,7 +648,7 @@ async function loadVisualQuiz() {
     return true;
   } catch {
     el.innerHTML =
-      "<p class=\"empty-state\">Kunne ikke koble til API. Sjekk nettverk eller API_BASE i scriptet.</p>";
+      "<p class=\"empty-state\">Nettverksfeil. Prøv igjen.</p>";
     return false;
   }
 }
@@ -659,12 +657,12 @@ function render() {
   const el = document.getElementById("visual-app");
   if (!state.questions.length) {
     el.innerHTML =
-      "<p class=\"empty-state\">Ingen spørsmål lastet. Bruk knappene over.</p>";
+      "<p class=\"empty-state\">Ingen runde lastet.</p>";
     return;
   }
   if (state.questions.length !== QUESTION_COUNT) {
     el.innerHTML =
-      "<p class=\"empty-state\">Denne bilde-quizen er ugyldig. Start en ny 10-spørsmålsrunde.</p>";
+      "<p class=\"empty-state\">Ugyldig runde.</p>";
     return;
   }
 
@@ -673,30 +671,22 @@ function render() {
   const idx = state.currentIndex;
   const n = state.questions.length;
   const isLast = idx === n - 1;
-  const isFinaleQuestion = question.imageQuestion === true || idx === n - 1;
   const img = state.sharedImage;
   const revisionMode = Boolean(qs.underRevision);
 
+  const creditLine = String(img?.credit ?? "").trim();
+  const captionInner = creditLine
+    ? escapeHtml(creditLine)
+    : '<span class="vq-image-credit__fallback">Kilde ikke oppgitt</span>';
   const imageBlock =
     img && img.url
       ? `<figure class="vq-image-frame">
            <img src="${escapeHtml(img.url)}" alt="${escapeHtml(
              img.title || "Illustrasjon til quizen"
            )}" loading="lazy" />
-           <figcaption>${escapeHtml(img.credit || "")}</figcaption>
+           <figcaption class="vq-image-credit">${captionInner}</figcaption>
          </figure>`
-      : `<p class="vq-image-missing">Ingen delt bilde i denne quizen.</p>`;
-
-  const finaleHintClass =
-    isFinaleQuestion ? "vq-hint-finale vq-hint-finale--active" : "vq-hint-finale";
-  const finaleHintText = isFinaleQuestion
-    ? "Siste spørsmål — dette handler om bildet over."
-    : "Underveis: samme bilde hele veien. Til slutt kommer et eget spørsmål om bildet.";
-
-  const kickerClass = isFinaleQuestion
-    ? "vq-question-kicker vq-question-kicker--finale"
-    : "vq-question-kicker";
-  const kickerText = isFinaleQuestion ? "Bilde-spørsmål" : "Flervalgsoppgave";
+      : `<p class="vq-image-missing">Mangler bilde.</p>`;
 
   let answerBlock = "";
   let resultText = "";
@@ -708,24 +698,23 @@ function render() {
     resultText = "";
   } else if (qs.answered && qs.lastFeedback && qs.lastFeedback.networkError) {
     resultClass = "result wrong";
-    resultText =
-      qs.answerMode === "mc" ? "" : "Kunne ikke sende inn svar.";
+    resultText = qs.answerMode === "mc" ? "" : "Kunne ikke sende.";
   } else if (qs.answered && qs.lastFeedback) {
     resultClass += qs.lastFeedback.correct ? " correct" : " wrong";
     if (!(qs.answerMode === "written" || qs.answerMode === "mc")) {
       const pts = qs.lastFeedback.points;
       resultText = qs.lastFeedback.correct
-        ? `Riktig svar. Poeng for spørsmålet: ${pts}`
-        : `Feil svar. Poeng for spørsmålet: ${pts}`;
+        ? `Riktig · ${pts} poeng`
+        : `Feil · ${pts} poeng`;
     } else {
       resultText = "";
     }
   } else if (!qs.answerMode) {
-    resultText = "Velg om du vil skrive svar eller få alternativer.";
+    resultText = "";
     answerBlock = `
       <div class="mode-choice">
         <button type="button" class="primary" id="mode-written">Skriv svar</button>
-        <button type="button" class="ghost" id="mode-mc">Få alternativer</button>
+        <button type="button" class="ghost" id="mode-mc">Alternativer</button>
       </div>
     `;
   } else if (qs.answerMode === "mc") {
@@ -733,9 +722,6 @@ function render() {
       resultClass = "result hint";
       resultText = "";
     }
-    const available = question.options.filter(
-      (opt) => !qs.removedOptions.includes(opt)
-    );
     const lastWrongMc =
       !qs.answered &&
       qs.lastFeedback &&
@@ -748,11 +734,9 @@ function render() {
       resultText = "";
     } else if (qs.removedOptions.length > 0 && !qs.answered) {
       resultClass = "result hint";
-      resultText =
-        "Feil alternativ er fjernet. Prøv igjen. Færre poeng for hvert nytt forsøk; endelig poeng skaleres med vanskegrad.";
+      resultText = "";
     } else {
-      resultText =
-        "Velg et svaralternativ. Første riktige forsøk gir mest poeng; videre forsøk gir mindre (skalert med vanskegrad).";
+      resultText = "";
     }
     const optLocked = qs.answered || qs.mcSubmitting;
     answerBlock = `
@@ -773,14 +757,13 @@ function render() {
           })
           .join("")}
       </div>
-      <p class="muted">Synlige valg igjen: ${available.length}</p>
     `;
   } else if (qs.answerMode === "written") {
     if (qs.writtenSubmitting) {
       resultClass = "result hint";
       resultText = "";
     } else {
-      resultText = "Skriv inn svar og trykk Send inn.";
+      resultText = "";
     }
     const formBusy = qs.writtenSubmitting;
     const writtenTaText =
@@ -791,13 +774,13 @@ function render() {
           : "";
     answerBlock = `
       <div class="write-box">
-        <textarea id="written-answer" placeholder="Skriv svaret ditt her"${
+        <textarea id="written-answer" placeholder="Svar"${
           formBusy ? " readonly" : ""
         }>${escapeHtml(writtenTaText)}</textarea>
         <div class="write-actions">
           <button type="button" class="primary" id="written-submit"${
             formBusy ? ' data-form-lock="1"' : ""
-          }>Send inn</button>
+          }>Send</button>
           <button
             type="button"
             class="ghost voice-mic-btn voice-mic-btn--round"
@@ -819,58 +802,35 @@ function render() {
 
   let resultContent;
   if (qs.writtenSubmitting) {
-    resultContent = loadingInlineRow("Sender inn svar…");
+    resultContent = loadingInlineRow("Sender svar");
   } else if (qs.mcSubmitting) {
-    resultContent = loadingInlineRow("Registrerer svar…");
+    resultContent = loadingInlineRow("Registrerer svar");
   } else if (revisionMode) {
     resultContent =
-      '<p class="revision-placeholder">Dette spørsmålet revideres.</p>';
+      '<p class="revision-placeholder vq-feedback-minimal vq-feedback-minimal--neutral">Revideres.</p>';
   } else if (
     qs.answered &&
     qs.lastFeedback &&
     qs.answerMode === "mc" &&
     qs.lastFeedback.networkError
   ) {
-    const sel =
-      qs.lastFeedback.selectedAnswer != null
-        ? String(qs.lastFeedback.selectedAnswer)
-        : "";
-    resultContent = `
-      <div class="feedback-mc feedback-choice-block">
-        <p class="feedback-user-heading"><strong>Ditt valg:</strong></p>
-        <p class="feedback-user-quote"><em>&quot;${escapeHtml(sel)}&quot;</em></p>
-        <div class="feedback-divider" aria-hidden="true"></div>
-        <p class="feedback-verdict">Kunne ikke sende inn svar.</p>
-      </div>
-    `;
+    resultContent = `<p class="vq-feedback-minimal vq-feedback-minimal--bad">Kunne ikke sende.</p>`;
   } else if (
     qs.answered &&
     qs.lastFeedback &&
     qs.answerMode === "mc" &&
     !qs.lastFeedback.networkError
   ) {
-    const sel =
-      qs.lastFeedback.selectedAnswer != null
-        ? String(qs.lastFeedback.selectedAnswer)
-        : "";
     const ptsRaw = qs.lastFeedback.points;
     const ptsNum = Number(ptsRaw);
     const ptsDisplay = Number.isFinite(ptsNum) ? ptsNum : 0;
-    const verdict = qs.lastFeedback.correct
-      ? `<p class="feedback-verdict-points"><strong>Riktig svar.</strong> Poeng for spørsmålet: ${escapeHtml(
-          String(ptsDisplay)
-        )}</p>`
-      : `<p class="feedback-verdict-points"><strong>Feil svar.</strong> Poeng for spørsmålet: ${escapeHtml(
-          String(ptsDisplay)
-        )}</p>`;
-    resultContent = `
-      <div class="feedback-mc feedback-choice-block">
-        <p class="feedback-user-heading"><strong>Ditt valg:</strong></p>
-        <p class="feedback-user-quote"><em>&quot;${escapeHtml(sel)}&quot;</em></p>
-        <div class="feedback-divider" aria-hidden="true"></div>
-        ${verdict}
-      </div>
-    `;
+    const mcClass = qs.lastFeedback.correct
+      ? "vq-feedback-minimal--ok"
+      : "vq-feedback-minimal--bad";
+    const mcLine = qs.lastFeedback.correct
+      ? `Riktig. <span class="vq-feedback-pts">${escapeHtml(String(ptsDisplay))} poeng</span>`
+      : `Feil. <span class="vq-feedback-pts">${escapeHtml(String(ptsDisplay))} poeng</span>`;
+    resultContent = `<p class="vq-feedback-minimal ${mcClass}">${mcLine}</p>`;
   } else if (
     !qs.answered &&
     qs.answerMode === "mc" &&
@@ -880,15 +840,7 @@ function render() {
     !qs.lastFeedback.correct &&
     !qs.lastFeedback.networkError
   ) {
-    const sel = String(qs.lastFeedback.selectedAnswer);
-    resultContent = `
-      <div class="feedback-mc feedback-choice-block">
-        <p class="feedback-user-heading"><strong>Ditt valg:</strong></p>
-        <p class="feedback-user-quote"><em>&quot;${escapeHtml(sel)}&quot;</em></p>
-        <div class="feedback-divider" aria-hidden="true"></div>
-        <p class="feedback-verdict-points">Feil svar. Alternativet er fjernet. Prøv igjen. (3 / 2 / 1 / 0 poeng ved riktig svar.)</p>
-      </div>
-    `;
+    resultContent = `<p class="vq-feedback-minimal vq-feedback-minimal--bad">Feil. Prøv igjen.</p>`;
   } else if (
     qs.answered &&
     qs.lastFeedback &&
@@ -913,15 +865,15 @@ function render() {
       ? `<p class="feedback-eval-heading"><strong>Vurdering</strong></p>
         <p class="feedback-eval-text">${escapeHtml(feedbackBody)}</p>`
       : "";
+    const writtenOk = Boolean(qs.lastFeedback.correct);
+    const wClass = writtenOk ? "vq-feedback-minimal--ok" : "vq-feedback-minimal--bad";
+    const wLine = writtenOk
+      ? `Riktig. <span class="vq-feedback-pts">${escapeHtml(String(ptsDisplay))} poeng</span>`
+      : `Feil. <span class="vq-feedback-pts">${escapeHtml(String(ptsDisplay))} poeng</span>`;
     resultContent = `
-      <div class="feedback-written">
-        <p class="feedback-user-heading"><strong>Ditt svar:</strong></p>
-        <p class="feedback-user-quote"><em>&quot;${escapeHtml(quote)}&quot;</em></p>
-        <div class="feedback-divider" aria-hidden="true"></div>
+      <div class="vq-feedback-written-stack">
+        <p class="vq-feedback-minimal ${wClass}">${wLine}</p>
         ${evalSection}
-        <p class="feedback-verdict-points"><strong>Poeng:</strong> ${escapeHtml(
-          String(ptsDisplay)
-        )} poeng</p>
       </div>
     `;
   } else if (
@@ -930,42 +882,30 @@ function render() {
     qs.lastFeedback.networkError &&
     qs.answerMode === "written"
   ) {
-    const quote =
-      qs.submittedAnswer != null ? String(qs.submittedAnswer) : "";
-    resultContent = `
-      <div class="feedback-written">
-        <p class="feedback-user-heading"><strong>Ditt svar:</strong></p>
-        <p class="feedback-user-quote"><em>&quot;${escapeHtml(quote)}&quot;</em></p>
-        <div class="feedback-divider" aria-hidden="true"></div>
-        <p class="feedback-verdict">Kunne ikke sende inn svar.</p>
-      </div>
-    `;
+    resultContent = `<p class="vq-feedback-minimal vq-feedback-minimal--bad">Kunne ikke sende.</p>`;
   } else {
     resultContent = escapeHtml(resultText);
   }
 
   const protestBtn = revisionMode
     ? ""
-    : '<button type="button" class="ghost" id="protest-open-button">Protester</button>';
+    : '<button type="button" class="ghost vq-protest-launch" id="protest-open-button" aria-label="Protester" title="Protester">⋯</button>';
 
   el.innerHTML = `
     <section class="vq-play">
       <header class="vq-play__header">
         <div class="vq-pills">
-          <span class="vq-pill">${escapeHtml(state.theme)}</span>
-          <span class="vq-pill">${QUESTION_COUNT} spørsmål</span>
           <span class="vq-pill vq-pill--score">${state.totalScore} poeng</span>
         </div>
         <div class="vq-play__header-actions">
           ${protestBtn}
-          <button type="button" class="vq-btn-ghost" id="visual-reload">Start på nytt</button>
+          <button type="button" class="vq-btn-ghost" id="visual-reload">Nytt</button>
         </div>
       </header>
 
       <div class="vq-progress-block">
         <div class="vq-progress-label">
-          <span>Spørsmål <strong>${idx + 1}</strong> av ${n}</span>
-          <span>${progressPercent(idx)} %</span>
+          <span><strong>${idx + 1}</strong> / ${n}</span>
         </div>
         <div class="vq-progress-bar-wrap" aria-hidden="true">
           <div class="vq-progress-bar" style="width:${progressPercent(idx)}%"></div>
@@ -973,36 +913,20 @@ function render() {
         ${buildStepDots(idx)}
       </div>
 
-      <p class="${finaleHintClass}" role="status">${escapeHtml(finaleHintText)}</p>
-
       <div class="vq-image-wrap">${imageBlock}</div>
 
       <div class="vq-question-block">
-        <span class="${kickerClass}">${escapeHtml(kickerText)}</span>
         ${
           revisionMode
-            ? '<h2 class="vq-question-title revision-heading">Dette spørsmålet revideres.</h2>'
+            ? '<h2 class="vq-question-title revision-heading">Revideres.</h2>'
             : `<h2 class="vq-question-title">${escapeHtml(question.question)}</h2>`
         }
         ${answerBlock}
         <div id="result" class="${resultClass}">${resultContent}</div>
         <footer class="vq-footer">
-          <p class="vq-footer-hint">${
-            revisionMode
-              ? "Trykk «Neste» for å hoppe videre."
-              : qs.answered
-                ? isLast
-                  ? "Trykk «Se resultat» for å avslutte."
-                  : "Gå videre til neste spørsmål."
-                : qs.answerMode === "written"
-                  ? "Send inn skrivesvaret ditt, eller bytt til alternativer før du har svart."
-                  : qs.answerMode === "mc"
-                    ? "Velg et alternativ."
-                    : "Velg skrivesvar eller alternativer."
-          }</p>
           <button type="button" class="vq-btn-next" id="visual-next" ${
             qs.answered || revisionMode ? "" : "disabled"
-          }>${isLast && qs.answered ? "Se resultat" : "Neste spørsmål"}</button>
+          }>${isLast && qs.answered ? "Resultat" : "Neste"}</button>
         </footer>
       </div>
     </section>
@@ -1015,7 +939,7 @@ function render() {
     protestSession = null;
     protestTargetQuestion = null;
     el.innerHTML =
-      "<p class=\"empty-state\">Velg «Start ny quiz» eller «Last siste bilde-quiz».</p>";
+      "<p class=\"empty-state\">Trykk Start eller Last lagret.</p>";
     document.getElementById("visual-generate-status").textContent = "";
   });
 
@@ -1068,11 +992,11 @@ function render() {
         <section class="vq-play">
           <div class="vq-end">
             <div class="vq-end__icon" aria-hidden="true">✓</div>
-            <h2 class="vq-end__title">Quizen er ferdig</h2>
-            <p class="vq-end__score">Du endte med <strong>${state.totalScore}</strong> poeng totalt.</p>
+            <h2 class="vq-end__title">Ferdig</h2>
+            <p class="vq-end__score"><strong>${state.totalScore}</strong> poeng</p>
             <div class="vq-end__actions">
               <button type="button" class="vq-btn-primary" id="visual-play-again">Ny runde</button>
-              <button type="button" class="vq-btn-ghost" id="visual-reload-end">Bare last inn på nytt</button>
+              <button type="button" class="vq-btn-ghost" id="visual-reload-end">Last på nytt</button>
             </div>
           </div>
         </section>
@@ -1108,7 +1032,7 @@ async function generateVisualQuiz() {
   const statusEl = document.getElementById("visual-generate-status");
 
   btn.disabled = true;
-  statusEl.innerHTML = '<span class="vq-spinner" aria-hidden="true"></span> Genererer quiz…';
+  statusEl.innerHTML = '<span class="vq-spinner" aria-hidden="true"></span> Venter…';
   try {
     const res = await fetch(`${API_BASE}/api/internal/generate-visual-10-quiz`, {
       method: "POST",
@@ -1121,7 +1045,7 @@ async function generateVisualQuiz() {
         typeof body.error === "string" ? body.error : res.statusText
       );
     }
-    statusEl.textContent = "Laster inn quiz…";
+    statusEl.textContent = "";
     await loadVisualQuiz();
     statusEl.textContent = "";
   } catch (e) {

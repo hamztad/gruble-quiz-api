@@ -35,6 +35,18 @@
   box-sizing: border-box;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 html {
   scroll-behavior: smooth;
 }
@@ -52,6 +64,140 @@ body.vq-body {
     #d4ebe4 0%,
     transparent 55%
   );
+}
+
+/* Midlertidig strippe-modus: roligere layout, mindre støy */
+body.vq-strip-minimal .vq-shell {
+  max-width: 36rem;
+}
+
+body.vq-strip-minimal .vq-brand {
+  margin-bottom: 1.25rem;
+}
+
+body.vq-strip-minimal .vq-setup-card {
+  box-shadow: var(--vq-shadow);
+  padding: 1rem 1.15rem 1.15rem;
+  margin-bottom: 1.25rem;
+}
+
+body.vq-strip-minimal .vq-play__header {
+  background: var(--vq-surface);
+  border-bottom: none;
+  padding-bottom: 0.65rem;
+}
+
+body.vq-strip-minimal .vq-progress-block {
+  border-bottom: none;
+  padding-top: 0.35rem;
+}
+
+body.vq-strip-minimal .vq-image-wrap {
+  padding-top: 1.35rem;
+  padding-bottom: 1.35rem;
+}
+
+body.vq-strip-minimal .vq-question-block {
+  padding-top: 1.75rem;
+  padding-bottom: 2rem;
+}
+
+body.vq-strip-minimal .vq-question-title {
+  margin-bottom: 1.5rem;
+}
+
+body.vq-strip-minimal .empty-state {
+  padding: 2.5rem 1rem;
+  font-size: 0.9rem;
+}
+
+/* Diskret protest — fortsatt klikkbar, lite synlig */
+.vq-protest-launch {
+  min-width: 2rem;
+  padding: 0.35rem 0.5rem !important;
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--vq-border) !important;
+  border-color: transparent !important;
+  background: transparent !important;
+  opacity: 0.45;
+}
+
+.vq-protest-launch:hover {
+  opacity: 0.85;
+  color: var(--vq-muted) !important;
+}
+
+/* Kort tilbakemelding */
+.vq-feedback-minimal {
+  margin: 0 0 1.1rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--vq-radius-sm);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.vq-feedback-minimal--ok {
+  background: var(--vq-success-bg);
+  color: var(--vq-success);
+  border: 1px solid #bbf7d0;
+}
+
+.vq-feedback-minimal--bad {
+  background: var(--vq-danger-bg);
+  color: var(--vq-danger);
+  border: 1px solid #fecaca;
+}
+
+.vq-feedback-minimal--neutral {
+  background: var(--vq-surface-2);
+  color: var(--vq-ink-soft);
+  border: 1px solid var(--vq-border);
+  font-weight: 500;
+}
+
+.vq-feedback-minimal .vq-feedback-pts {
+  font-weight: 600;
+  color: inherit;
+  opacity: 0.92;
+}
+
+body.vq-strip-minimal .vq-footer {
+  border-top: none;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  justify-content: flex-end;
+}
+
+body.vq-strip-minimal .vq-footer-hint {
+  display: none;
+}
+
+.vq-image-credit__fallback {
+  color: #78716c;
+  font-style: italic;
+}
+
+.vq-feedback-written-stack {
+  margin: 0 0 1rem;
+}
+
+.vq-feedback-written-stack .feedback-eval-heading {
+  margin-top: 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--vq-muted);
+}
+
+.vq-feedback-written-stack .feedback-eval-text {
+  margin: 0.35rem 0 0;
+  font-size: 0.9375rem;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--vq-ink-soft);
 }
 
 .vq-shell {

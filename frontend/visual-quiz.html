@@ -3,51 +3,30 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Bilde-quiz — Gruble</title>
+    <title>Quiz — Gruble</title>
     <link rel="stylesheet" href="visual-quiz.css" />
     <link rel="stylesheet" href="styles.css" />
   </head>
-  <body class="vq-body">
+  <body class="vq-body vq-strip-minimal">
     <div class="vq-shell">
       <header class="vq-brand">
-        <h1 class="vq-brand__title">Bilde-quiz</h1>
-        <p class="vq-brand__tagline">
-          Ti spørsmål, ett bilde gjennom hele runden. Til slutt venter et eget spørsmål
-          knyttet til bildet.
-        </p>
+        <h1 class="vq-brand__title">Quiz</h1>
       </header>
 
-      <section class="vq-setup-card" aria-label="Start ny quiz">
-        <span class="vq-setup-card__label">Fast oppsett</span>
-        <p class="vq-setup-copy">
-          Kategorien velges automatisk fra en forhåndsbestemt, vektet pool. Hver runde
-          er alltid en 10-spørsmåls bilde-quiz med eget bildespørsmål til slutt.
-        </p>
+      <section class="vq-setup-card" aria-label="Start quiz">
         <div class="vq-setup-actions">
           <button type="button" class="vq-btn-primary" id="visual-generate-button">
-            Start ny quiz (10 spørsmål)
+            Start
           </button>
           <button type="button" class="vq-btn-ghost vq-btn-ghost--full" id="visual-load-button">
-            Last siste bilde-quiz
+            Last lagret
           </button>
         </div>
         <p class="vq-generate-status" id="visual-generate-status" role="status"></p>
-
-        <details class="vq-dev-details">
-          <summary>Teknisk info</summary>
-          <p>
-            Kategorien velges på serveren. Standard-quizen er uendret. API:
-            <code>POST /api/internal/generate-visual-10-quiz</code>,
-            <code>GET /api/quiz/visual-today</code>.
-          </p>
-        </details>
       </section>
 
       <div id="visual-app" aria-live="polite">
-        <p class="empty-state">
-          Trykk «Start ny quiz» for å generere, eller «Last siste bilde-quiz» hvis API-et
-          allerede har en lagret runde.
-        </p>
+        <p class="empty-state">Trykk Start eller Last lagret.</p>
       </div>
     </div>
 
