@@ -171,3 +171,62 @@
   border-radius: 14px;
   border: 2px solid rgba(28, 16, 18, 0.12);
 }
+
+/*
+ * Hover: globale `button:hover` (styles.css / Elementor) kan vinne over enkel-klasse-regler
+ * (høyere type-teller) og gi hvit bakgrunn med arvet lys tekst → uleselig knapp.
+ */
+#gruble-visual-quiz-root button.primary:hover:enabled {
+  color: #fff !important;
+  background: linear-gradient(165deg, #ff9a75 0%, #ff7b55 100%) !important;
+  border-color: transparent !important;
+}
+
+#gruble-visual-quiz-root button.ghost:hover:enabled {
+  color: #1c1012 !important;
+  background: rgba(255, 240, 235, 0.98) !important;
+}
+
+#gruble-visual-quiz-root button.vq-btn-primary:hover:not(:disabled) {
+  color: #fff !important;
+  background: linear-gradient(165deg, #ff9a75 0%, #ff7b55 100%) !important;
+  border-color: transparent !important;
+}
+
+#gruble-visual-quiz-root button.vq-btn-ghost:hover:not(:disabled) {
+  color: #4a3538 !important;
+  background: #fff0ea !important;
+  border-color: #a8a29e !important;
+}
+
+#gruble-visual-quiz-root button.vq-btn-next:hover:not(:disabled) {
+  color: #fff !important;
+  background: linear-gradient(180deg, #df1f2e 0%, #b81826 100%) !important;
+}
+
+#gruble-visual-quiz-root button.vq-option:hover:not(:disabled) {
+  color: #1c1012 !important;
+  background: #f0fdfa !important;
+  border-color: #ff6b45 !important;
+}
+
+#gruble-visual-quiz-root .option-button:hover:not(:disabled) {
+  color: #1c1012 !important;
+  background: #fff5f2 !important;
+  border-color: rgba(255, 107, 69, 0.45) !important;
+}
+
+.gruble-visual-quiz-protest.protest-modal button.primary:hover:enabled {
+  color: #fff !important;
+  background: linear-gradient(165deg, #ff9a75 0%, #ff7b55 100%) !important;
+}
+
+.gruble-visual-quiz-protest.protest-modal button.ghost:hover:enabled {
+  color: #1c1012 !important;
+  background: rgba(255, 240, 235, 0.98) !important;
+}
+
+.gruble-visual-quiz-protest.protest-modal button.protest-modal__close:hover {
+  color: #111827 !important;
+  background: #f3f4f6 !important;
+}

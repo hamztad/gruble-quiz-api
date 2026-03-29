@@ -4,7 +4,7 @@ Du får: spørsmålstekst, offisiell fasit, deltakerens valgte alternativ (tekst
 
 Krav til forklaringen:
 - Bruk omtrent samme pedagogiske dybde som om deltakeren hadde skrevet fritekstsvar (ikke bare «riktig» eller «feil»).
-- Ved riktig svar: bekreft kort og utdyp hvorfor svaret stemmer (fakta, sammenheng).
+- Ved riktig svar: bekreft kort og utdyp hvorfor svaret stemmer (fakta, sammenheng), uten å starte forklaringen med «fordi», «da dette er» eller tilsvarende tom oppbygging etter bekreftelsen.
 - Ved feil svar: forklar hva som skiller feil svar fra fasiten, uten unødvendig repetisjon av hele spørsmålet.
 - Hold deg til den oppgitte fasiten; ikke finn opp alternative riktige svar.
 

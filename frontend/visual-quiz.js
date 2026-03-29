@@ -286,6 +286,26 @@ function stripAnswerPrefixFromFeedback(answer, feedback) {
   return original;
 }
 
+/** Etter «Dette er riktig» i UI: fjern gjentatt bekreftelse og tomme innledninger («da dette er», «fordi»). */
+function stripWrittenCorrectFillerFromEval(text) {
+  let s = String(text ?? "").trim();
+  if (!s) {
+    return s;
+  }
+  s = s
+    .replace(
+      /^(dette\s+er\s+riktig|helt\s+riktig|korrekt|du\s+har\s+(?:helt\s+)?rett)[.,!:;?\s\-–—]+/gi,
+      ""
+    )
+    .trim();
+  let prev;
+  do {
+    prev = s;
+    s = s.replace(/^(da\s+dette\s+er|fordi|siden\s+(?:dette\s+er\s+)?)\s+/i, "").trim();
+  } while (s !== prev);
+  return s;
+}
+
 function isGenericMcFeedbackLine(s) {
   const t = String(s ?? "").trim();
   return (
@@ -295,14 +315,17 @@ function isGenericMcFeedbackLine(s) {
 }
 
 /** Felles «Vurdering»-blokk for skrift/tale og flervalg (unngå tom duplikat). */
-function buildVqEvalSectionFromFeedback(feedbackRaw, quoteForStrip) {
+function buildVqEvalSectionFromFeedback(feedbackRaw, quoteForStrip, isCorrectWritten) {
   const feedback = typeof feedbackRaw === "string" ? feedbackRaw : "";
   const quote = quoteForStrip != null ? String(quoteForStrip) : "";
   const feedbackTrim = feedback.trim();
   if (!feedbackTrim || isGenericMcFeedbackLine(feedbackTrim)) {
     return "";
   }
-  const feedbackBody = stripAnswerPrefixFromFeedback(quote, feedbackTrim);
+  let feedbackBody = stripAnswerPrefixFromFeedback(quote, feedbackTrim);
+  if (isCorrectWritten) {
+    feedbackBody = stripWrittenCorrectFillerFromEval(feedbackBody);
+  }
   const trivialFeedback =
     !feedbackBody || /^ingen forklaring\.?$/i.test(feedbackBody);
   const evalDistinct =
@@ -322,12 +345,23 @@ function buildVqEvalSectionFromFeedback(feedbackRaw, quoteForStrip) {
   return "";
 }
 
-function buildVqFeedbackWrittenStack(correct, ptsDisplay, feedbackRaw, quoteForStrip) {
+function buildVqFeedbackWrittenStack(
+  correct,
+  ptsDisplay,
+  feedbackRaw,
+  quoteForStrip,
+  opts
+) {
+  const stripCorrectIntro = Boolean(opts?.stripCorrectIntro);
   const wClass = correct ? "vq-feedback-minimal--ok" : "vq-feedback-minimal--bad";
   const wLine = correct
-    ? `Riktig. <span class="vq-feedback-pts">${escapeHtml(String(ptsDisplay))} poeng</span>`
+    ? `Dette er riktig. <span class="vq-feedback-pts">${escapeHtml(String(ptsDisplay))} poeng</span>`
     : `Feil. <span class="vq-feedback-pts">${escapeHtml(String(ptsDisplay))} poeng</span>`;
-  const evalSection = buildVqEvalSectionFromFeedback(feedbackRaw, quoteForStrip);
+  const evalSection = buildVqEvalSectionFromFeedback(
+    feedbackRaw,
+    quoteForStrip,
+    stripCorrectIntro
+  );
   return `
       <div class="vq-feedback-written-stack">
         <p class="vq-feedback-minimal ${wClass}">${wLine}</p>
@@ -996,7 +1030,8 @@ function render() {
       Boolean(qs.lastFeedback.correct),
       ptsDisplay,
       fb,
-      quoteMc
+      quoteMc,
+      { stripCorrectIntro: Boolean(qs.lastFeedback.correct) }
     );
   } else if (
     !qs.answered &&
@@ -1026,10 +1061,11 @@ function render() {
     const writtenOk = Boolean(qs.lastFeedback.correct);
     const tryAlternativesBlock = writtenOk
       ? ""
-      : `<p class="vq-try-alternatives"><button type="button" class="primary" id="written-to-mc">Prøv blant alternativer</button></p>`;
+      : `<p class="vq-try-alternatives"><button type="button" class="primary" id="written-to-mc">Prøv med alternativer</button></p>`;
     resultContent =
-      buildVqFeedbackWrittenStack(writtenOk, ptsDisplay, feedback, quote) +
-      tryAlternativesBlock;
+      buildVqFeedbackWrittenStack(writtenOk, ptsDisplay, feedback, quote, {
+        stripCorrectIntro: writtenOk && ptsDisplay >= 5,
+      }) + tryAlternativesBlock;
   } else if (
     qs.answered &&
     qs.lastFeedback &&
@@ -1046,7 +1082,7 @@ function render() {
     : '<button type="button" class="vq-btn-ghost" data-protest-open="1">Protester</button>';
   const protestBtnInline = revisionMode
     ? ""
-    : '<div class="vq-result-actions"><button type="button" class="vq-btn-ghost" data-protest-open="1">Protester dette spørsmålet</button></div>';
+    : '<div class="vq-result-actions"><button type="button" class="vq-btn-ghost" data-protest-open="1">Protester på dette spørsmålet</button></div>';
 
   el.innerHTML = `
     <section class="vq-play">

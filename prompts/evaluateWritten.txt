@@ -42,6 +42,7 @@ Viktig:
   "Du svarte: ..."
 - Forklar kort hvorfor svaret er riktig, delvis eller feil
 - Kommenter tilleggsinformasjon hvis relevant
+- Når svaret er klart riktig (full pott / maks poeng): ikke gjenta «dette er riktig» som egen setning i tillegg til gjentakelsen av svaret; etter «Du svarte: …» gå rett på pedagogisk forklaring uten å innlede med «fordi», «da dette er», «siden dette er» eller lignende fyllord
 
 7. Delvis poeng (poeng 1–9, altså ikke null og ikke maks):
 - Inkluder tydelig hva som ville gitt **fullt poeng** / maksimal score: presis formulering eller innhold som fasiten tilsier.
