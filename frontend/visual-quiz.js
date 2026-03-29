@@ -1041,9 +1041,12 @@ function render() {
     resultContent = escapeHtml(resultText);
   }
 
-  const protestBtn = revisionMode
+  const protestBtnHeader = revisionMode
     ? ""
-    : '<button type="button" class="ghost" id="protest-open-button">Protester</button>';
+    : '<button type="button" class="vq-btn-ghost" data-protest-open="1">Protester</button>';
+  const protestBtnInline = revisionMode
+    ? ""
+    : '<div class="vq-result-actions"><button type="button" class="vq-btn-ghost" data-protest-open="1">Protester dette spørsmålet</button></div>';
 
   el.innerHTML = `
     <section class="vq-play">
@@ -1052,7 +1055,7 @@ function render() {
           <span class="vq-pill vq-pill--score">${state.totalScore} poeng</span>
         </div>
         <div class="vq-play__header-actions">
-          ${protestBtn}
+          ${protestBtnHeader}
           <button type="button" class="vq-btn-ghost" id="visual-reload">Nytt</button>
         </div>
       </header>
@@ -1077,6 +1080,7 @@ function render() {
         }
         ${answerBlock}
         <div id="result" class="${resultClass}">${resultContent}</div>
+        ${protestBtnInline}
         <footer class="vq-footer">
           <button type="button" class="vq-btn-next" id="visual-next" ${
             qs.answered || revisionMode ? "" : "disabled"
@@ -1098,8 +1102,10 @@ function render() {
     afterDomUpdateNotifyEmbed();
   });
 
-  document.getElementById("protest-open-button")?.addEventListener("click", () => {
-    openProtestModal(question);
+  el.querySelectorAll("[data-protest-open]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openProtestModal(question);
+    });
   });
 
   if (!qs.answered && !qs.answerMode) {

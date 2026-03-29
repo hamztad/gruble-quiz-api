@@ -465,6 +465,10 @@ body.vq-strip-minimal .vq-footer-hint {
   margin-bottom: 0.35rem;
 }
 
+.vq-result-actions {
+  margin: 0 0 1rem;
+}
+
 @media (min-width: 640px) {
   .vq-play__header {
     padding: 1.15rem 1.5rem;
