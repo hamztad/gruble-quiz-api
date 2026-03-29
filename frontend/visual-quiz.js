@@ -842,7 +842,7 @@ async function loadVisualQuiz() {
     const response = await fetch(`${API_BASE}/api/quiz/visual-today`);
     if (!response.ok) {
       el.innerHTML =
-        "<p class=\"empty-state\">Ingen lagret runde. Trykk Start.</p>";
+        "<p class=\"empty-state\">Dagens quiz er ikke klar ennå.</p>";
       afterDomUpdateNotifyEmbed();
       return false;
     }
@@ -896,8 +896,7 @@ async function loadVisualQuizById(quizDbId) {
 function render() {
   const el = document.getElementById("visual-app");
   if (!state.questions.length) {
-    el.innerHTML =
-      "<p class=\"empty-state\">Ingen runde lastet.</p>";
+    el.innerHTML = "<p class=\"empty-state\">Trykk Ta dagens quiz.</p>";
     afterDomUpdateNotifyEmbed();
     return;
   }
@@ -2103,18 +2102,16 @@ function initVisualQuizPage() {
   initVoiceInputDelegation();
 
   const generateButton = document.getElementById("visual-generate-button");
-  const loadButton = document.getElementById("visual-load-button");
 
-  if (!generateButton || !loadButton) {
+  if (!generateButton) {
     console.error("[visual-quiz] Missing required controls during init");
     return;
   }
 
-  generateButton.addEventListener("click", generateVisualQuiz);
-  loadButton.addEventListener("click", () => {
+  generateButton.addEventListener("click", () => {
     const statusEl = document.getElementById("visual-generate-status");
     statusEl.textContent = "";
-    loadVisualQuiz();
+    void loadVisualQuiz();
   });
 
   document.getElementById("visual-archive-toggle")?.addEventListener("click", () => {

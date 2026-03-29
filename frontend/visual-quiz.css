@@ -386,6 +386,13 @@ body.vq-strip-minimal .vq-footer-hint {
   margin-top: 0.35rem;
 }
 
+.vq-setup-note {
+  margin: 0.9rem 0 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--vq-ink-soft);
+}
+
 .vq-btn-ghost--full {
   display: flex;
   align-items: center;
