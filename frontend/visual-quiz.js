@@ -114,6 +114,8 @@ const state = {
   totalScore: 0,
   byId: {},
   protestStateByQuestionId: {},
+  /** DB-rad for aktiv visual-10 (svar og arkiv må matche samme rad). */
+  quizDbId: null,
 };
 
 let protestTargetQuestion = null;
@@ -713,6 +715,7 @@ async function submitMultipleChoice(question, answer, qs) {
         attemptNumber,
         questionOverride: getQuestionOverride(question),
         quizVariant: QUIZ_VARIANT,
+        ...(state.quizDbId != null ? { quizDbId: state.quizDbId } : {}),
       }),
     });
     const result = await response.json();
@@ -777,6 +780,7 @@ async function submitWritten(question, answer, qs) {
         mode: "written",
         questionOverride: getQuestionOverride(question),
         quizVariant: QUIZ_VARIANT,
+        ...(state.quizDbId != null ? { quizDbId: state.quizDbId } : {}),
       }),
     });
     const result = await response.json();
@@ -802,6 +806,33 @@ async function submitWritten(question, answer, qs) {
   }
 }
 
+function applyVisualQuizPayload(data) {
+  if (!isValidVisualQuizPayload(data)) {
+    return false;
+  }
+  state.theme = data.theme || "";
+  state.difficulty = data.difficulty || "normal";
+  state.variant = data.variant || QUIZ_VARIANT;
+  const idNum = Number(data.quizDbId);
+  state.quizDbId = Number.isFinite(idNum) && idNum >= 1 ? idNum : null;
+  state.sharedImage =
+    data.sharedImage &&
+    typeof data.sharedImage === "object" &&
+    typeof data.sharedImage.url === "string"
+      ? data.sharedImage
+      : null;
+  const raw = Array.isArray(data.questions) ? data.questions : [];
+  state.questions = shuffleQuizOptions(raw);
+  state.currentIndex = 0;
+  state.totalScore = 0;
+  state.byId = {};
+  state.protestStateByQuestionId = {};
+  protestSession = null;
+  protestTargetQuestion = null;
+  render();
+  return true;
+}
+
 async function loadVisualQuiz() {
   const el = document.getElementById("visual-app");
   el.innerHTML =
@@ -816,30 +847,43 @@ async function loadVisualQuiz() {
       return false;
     }
     const data = await response.json();
-    if (!isValidVisualQuizPayload(data)) {
+    if (!applyVisualQuizPayload(data)) {
       el.innerHTML =
         "<p class=\"empty-state\">Ugyldig runde. Start på nytt.</p>";
       afterDomUpdateNotifyEmbed();
       return false;
     }
-    state.theme = data.theme || "";
-    state.difficulty = data.difficulty || "normal";
-    state.variant = data.variant || QUIZ_VARIANT;
-    state.sharedImage =
-      data.sharedImage &&
-      typeof data.sharedImage === "object" &&
-      typeof data.sharedImage.url === "string"
-        ? data.sharedImage
-        : null;
-    const raw = Array.isArray(data.questions) ? data.questions : [];
-    state.questions = shuffleQuizOptions(raw);
-    state.currentIndex = 0;
-    state.totalScore = 0;
-    state.byId = {};
-    state.protestStateByQuestionId = {};
-    protestSession = null;
-    protestTargetQuestion = null;
-    render();
+    return true;
+  } catch {
+    el.innerHTML =
+      "<p class=\"empty-state\">Nettverksfeil. Prøv igjen.</p>";
+    afterDomUpdateNotifyEmbed();
+    return false;
+  }
+}
+
+async function loadVisualQuizById(quizDbId) {
+  const el = document.getElementById("visual-app");
+  el.innerHTML =
+    "<p class=\"empty-state\"><span class=\"vq-spinner\" aria-hidden=\"true\"></span> Laster…</p>";
+  afterDomUpdateNotifyEmbed();
+  try {
+    const response = await fetch(
+      `${API_BASE}/api/quiz/visual-by-id?id=${encodeURIComponent(String(quizDbId))}`
+    );
+    if (!response.ok) {
+      el.innerHTML =
+        "<p class=\"empty-state\">Fant ikke quizen. Velg en annen i arkivet.</p>";
+      afterDomUpdateNotifyEmbed();
+      return false;
+    }
+    const data = await response.json();
+    if (!applyVisualQuizPayload(data)) {
+      el.innerHTML =
+        "<p class=\"empty-state\">Ugyldig runde.</p>";
+      afterDomUpdateNotifyEmbed();
+      return false;
+    }
     return true;
   } catch {
     el.innerHTML =
@@ -1957,6 +2001,102 @@ function initProtestModal() {
     });
   }
 }
+function groupArchiveQuizzesByMonth(items) {
+  const sorted = [...items].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+  const monthFmt = new Intl.DateTimeFormat("nb-NO", {
+    month: "long",
+    year: "numeric",
+  });
+  const groups = [];
+  const seen = new Map();
+  for (const q of sorted) {
+    const d = new Date(q.createdAt);
+    const key = `${d.getFullYear()}-${d.getMonth()}`;
+    let g = seen.get(key);
+    if (!g) {
+      g = { label: monthFmt.format(d), items: [] };
+      seen.set(key, g);
+      groups.push(g);
+    }
+    g.items.push(q);
+  }
+  return groups;
+}
+
+function renderVisualArchiveHtml(groups) {
+  const dateFmt = new Intl.DateTimeFormat("nb-NO", {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+  const parts = [];
+  for (const g of groups) {
+    parts.push(`<h3 class="vq-archive-month">${escapeHtml(g.label)}</h3>`);
+    parts.push('<ul class="vq-archive-list">');
+    for (const q of g.items) {
+      const id = Number(q.id);
+      if (!Number.isFinite(id)) {
+        continue;
+      }
+      const label = typeof q.label === "string" ? q.label : "";
+      const dateStr = dateFmt.format(new Date(q.createdAt));
+      parts.push(
+        `<li><button type="button" class="vq-archive-item" data-quiz-db-id="${id}">` +
+          `<span class="vq-archive-item__title">${escapeHtml(label)}</span>` +
+          `<span class="vq-archive-item__meta">${escapeHtml(dateStr)}</span>` +
+          `</button></li>`
+      );
+    }
+    parts.push("</ul>");
+  }
+  return parts.join("");
+}
+
+function setVisualArchiveOpen(open) {
+  const panel = document.getElementById("visual-archive-panel");
+  const btn = document.getElementById("visual-archive-toggle");
+  if (!panel || !btn) {
+    return;
+  }
+  panel.classList.toggle("vq-archive-panel--hidden", !open);
+  panel.setAttribute("aria-hidden", open ? "false" : "true");
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+async function refreshVisualArchivePanel() {
+  const inner = document.getElementById("visual-archive-content");
+  if (!inner) {
+    return;
+  }
+  inner.innerHTML =
+    '<p class="vq-archive-status"><span class="vq-spinner" aria-hidden="true"></span> Laster arkiv…</p>';
+  afterDomUpdateNotifyEmbed();
+  try {
+    const res = await fetch(`${API_BASE}/api/quiz/visual-archive`);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      inner.innerHTML = `<p class="vq-archive-status">${escapeHtml(
+        typeof body.error === "string" ? body.error : "Kunne ikke laste arkiv."
+      )}</p>`;
+      afterDomUpdateNotifyEmbed();
+      return;
+    }
+    const list = Array.isArray(body.quizzes) ? body.quizzes : [];
+    if (list.length === 0) {
+      inner.innerHTML =
+        '<p class="vq-archive-status">Ingen lagrede quizer ennå.</p>';
+      afterDomUpdateNotifyEmbed();
+      return;
+    }
+    inner.innerHTML = renderVisualArchiveHtml(groupArchiveQuizzesByMonth(list));
+    afterDomUpdateNotifyEmbed();
+  } catch {
+    inner.innerHTML = '<p class="vq-archive-status">Nettverksfeil.</p>';
+    afterDomUpdateNotifyEmbed();
+  }
+}
+
 function initVisualQuizPage() {
   initEmbedParentHeightBridge();
   initProtestModal();
@@ -1975,6 +2115,33 @@ function initVisualQuizPage() {
     const statusEl = document.getElementById("visual-generate-status");
     statusEl.textContent = "";
     loadVisualQuiz();
+  });
+
+  document.getElementById("visual-archive-toggle")?.addEventListener("click", () => {
+    const panel = document.getElementById("visual-archive-panel");
+    if (!panel) {
+      return;
+    }
+    const willOpen = panel.classList.contains("vq-archive-panel--hidden");
+    setVisualArchiveOpen(willOpen);
+    if (willOpen) {
+      void refreshVisualArchivePanel();
+    }
+  });
+
+  document.getElementById("visual-archive-content")?.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-quiz-db-id]");
+    if (!btn) {
+      return;
+    }
+    const id = Number(btn.getAttribute("data-quiz-db-id"));
+    if (!Number.isFinite(id)) {
+      return;
+    }
+    setVisualArchiveOpen(false);
+    const statusEl = document.getElementById("visual-generate-status");
+    statusEl.textContent = "";
+    void loadVisualQuizById(id);
   });
 }
 

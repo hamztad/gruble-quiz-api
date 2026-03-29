@@ -13,6 +13,10 @@ const {
   normalizeQuizQuestionsFromDb,
   serializeQuizForStorage,
 } = require("./quizImages");
+
+const VISUAL_ARCHIVE_LIST_LIMIT = 80;
+const VISUAL_ARCHIVE_LABEL_MAX_LEN = 42;
+const VISUAL_ARCHIVE_QUESTION_INDICES = [0, 4, 9];
 const {
   QUIZ_MEMORY_MODE,
   filterQuizQuestionsAgainstMemory,
@@ -259,6 +263,82 @@ function isValidVisualTenQuizPayload(payload) {
     return false;
   }
   return true;
+}
+
+function parseStoredQuizQuestionsRaw(quizRow) {
+  try {
+    const q = quizRow?.questions;
+    if (q == null) {
+      return null;
+    }
+    const raw =
+      typeof q === "string" ? JSON.parse(q) : JSON.parse(JSON.stringify(q));
+    return raw && typeof raw === "object" ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+function truncateVisualArchiveSnippet(text, maxLen) {
+  const t = String(text ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t) {
+    return "";
+  }
+  const n = Math.max(8, Number(maxLen) || VISUAL_ARCHIVE_LABEL_MAX_LEN);
+  if (t.length <= n) {
+    return t;
+  }
+  const slice = t.slice(0, n);
+  const lastSpace = slice.lastIndexOf(" ");
+  const base =
+    lastSpace > Math.floor(n * 0.45) ? slice.slice(0, lastSpace) : slice.trim();
+  return `${base}…`;
+}
+
+/**
+ * Arkivtittel fra spørsmål 1, 5 og 10 (indeks 0, 4, 9), adskilt med middels prikk.
+ * @param {unknown[]} questionObjs
+ * @param {Date|string|number} [createdAtFallback]
+ */
+function buildVisualArchiveLabel(questionObjs, createdAtFallback) {
+  const qs = Array.isArray(questionObjs) ? questionObjs : [];
+  const parts = [];
+  for (const idx of VISUAL_ARCHIVE_QUESTION_INDICES) {
+    const snippet = truncateVisualArchiveSnippet(qs[idx]?.question, VISUAL_ARCHIVE_LABEL_MAX_LEN);
+    if (snippet) {
+      parts.push(snippet);
+    }
+  }
+  if (parts.length > 0) {
+    return parts.join(" · ");
+  }
+  const d =
+    createdAtFallback instanceof Date
+      ? createdAtFallback
+      : new Date(createdAtFallback);
+  if (!Number.isNaN(d.getTime())) {
+    return `Quiz ${d.toLocaleString("nb-NO", {
+      dateStyle: "short",
+      timeStyle: "short",
+    })}`;
+  }
+  return "Bilde-quiz";
+}
+
+function resolveVisualArchiveLabel(rawObj, payload, createdAt) {
+  const stored =
+    rawObj && typeof rawObj.archiveLabel === "string"
+      ? rawObj.archiveLabel.trim()
+      : "";
+  if (stored) {
+    return stored;
+  }
+  const questions = Array.isArray(payload?.questions) ? payload.questions : [];
+  const ca =
+    createdAt instanceof Date ? createdAt : new Date(createdAt);
+  return buildVisualArchiveLabel(questions, ca);
 }
 
 /**
@@ -550,15 +630,11 @@ setupTestTable();
 
 /** Leser questions JSONB (array el. { sharedImage, questions }). */
 function getQuizQuestionsPayloadFromRow(quizRow) {
-  try {
-    const raw =
-      typeof quizRow.questions === "string"
-        ? JSON.parse(quizRow.questions)
-        : JSON.parse(JSON.stringify(quizRow.questions));
-    return normalizeQuizQuestionsFromDb(raw);
-  } catch {
+  const raw = parseStoredQuizQuestionsRaw(quizRow);
+  if (!raw) {
     return { sharedImage: null, questions: [], variant: null };
   }
+  return normalizeQuizQuestionsFromDb(raw);
 }
 
 app.get("/", (_req, res) => {
@@ -2272,6 +2348,118 @@ app.get("/api/quiz/visual-today", async (_req, res) => {
       variant: variant || VISUAL_TEN_QUIZ_VARIANT,
       sharedImage: sharedImage || null,
       questions: questionsForClient,
+      quizDbId: quiz.id,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await pool.end().catch(() => {});
+  }
+});
+
+app.get("/api/quiz/visual-archive", async (_req, res) => {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    res.status(500).json({ error: "DATABASE_URL is not set" });
+    return;
+  }
+
+  const pool = new Pool({
+    connectionString: databaseUrl,
+    ssl:
+      process.env.NODE_ENV === "production"
+        ? { rejectUnauthorized: false }
+        : undefined,
+  });
+
+  try {
+    const result = await pool.query(
+      `SELECT id, theme, questions, created_at FROM quizzes
+       WHERE questions::jsonb->>'variant' = $1
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [VISUAL_TEN_QUIZ_VARIANT, VISUAL_ARCHIVE_LIST_LIMIT]
+    );
+
+    const quizzes = [];
+    for (const row of result.rows) {
+      const raw = parseStoredQuizQuestionsRaw(row);
+      const payload = raw ? normalizeQuizQuestionsFromDb(raw) : null;
+      if (!payload || !isValidVisualTenQuizPayload(payload)) {
+        continue;
+      }
+      const createdAt = row.created_at;
+      const label = resolveVisualArchiveLabel(raw, payload, createdAt);
+      quizzes.push({
+        id: row.id,
+        createdAt:
+          createdAt instanceof Date
+            ? createdAt.toISOString()
+            : new Date(createdAt).toISOString(),
+        label,
+        theme: String(row.theme ?? "").trim() || VISUAL_TEN_DISPLAY_THEME,
+      });
+    }
+
+    res.status(200).json({ quizzes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await pool.end().catch(() => {});
+  }
+});
+
+app.get("/api/quiz/visual-by-id", async (req, res) => {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    res.status(500).json({ error: "DATABASE_URL is not set" });
+    return;
+  }
+
+  const idRaw = req.query?.id;
+  const id = Number.parseInt(String(idRaw ?? ""), 10);
+  if (!Number.isFinite(id) || id < 1) {
+    res.status(400).json({ error: "Missing or invalid id" });
+    return;
+  }
+
+  const pool = new Pool({
+    connectionString: databaseUrl,
+    ssl:
+      process.env.NODE_ENV === "production"
+        ? { rejectUnauthorized: false }
+        : undefined,
+  });
+
+  try {
+    const result = await pool.query("SELECT * FROM quizzes WHERE id = $1", [id]);
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: "Quiz not found" });
+      return;
+    }
+
+    const quiz = result.rows[0];
+    const raw = parseStoredQuizQuestionsRaw(quiz);
+    const payload = raw ? normalizeQuizQuestionsFromDb(raw) : null;
+    if (
+      !payload ||
+      !isValidVisualTenQuizPayload(payload) ||
+      (payload.variant != null && payload.variant !== VISUAL_TEN_QUIZ_VARIANT)
+    ) {
+      res.status(404).json({ error: "Quiz not found" });
+      return;
+    }
+
+    const questions = Array.isArray(payload.questions) ? payload.questions : [];
+    const questionsForClient = questions.map((q) => stripQuestionForPublicClient(q));
+
+    res.status(200).json({
+      theme: quiz.theme,
+      difficulty: normalizeQuizDifficulty(quiz.difficulty),
+      variant: payload.variant || VISUAL_TEN_QUIZ_VARIANT,
+      sharedImage: payload.sharedImage || null,
+      questions: questionsForClient,
+      quizDbId: id,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2290,6 +2478,14 @@ app.post("/api/quiz/answer", async (req, res) => {
   const { questionId, answer, mode, attemptNumber, questionOverride } = req.body ?? {};
   const quizVariantRaw =
     typeof req.body?.quizVariant === "string" ? req.body.quizVariant.trim() : "";
+  const quizDbIdBody = req.body?.quizDbId;
+  const quizDbIdParsed = Number.parseInt(String(quizDbIdBody ?? ""), 10);
+  const quizDbIdOk =
+    quizDbIdBody !== undefined &&
+    quizDbIdBody !== null &&
+    String(quizDbIdBody).trim() !== "" &&
+    Number.isFinite(quizDbIdParsed) &&
+    quizDbIdParsed >= 1;
   if (questionId === undefined || questionId === null || answer === undefined) {
     res.status(400).json({ error: "Missing questionId or answer" });
     return;
@@ -2306,13 +2502,19 @@ app.post("/api/quiz/answer", async (req, res) => {
   try {
     const result =
       quizVariantRaw === VISUAL_TEN_QUIZ_VARIANT
-        ? await pool.query(
-            `SELECT * FROM quizzes
-             WHERE questions::jsonb->>'variant' = $1
-             ORDER BY created_at DESC
-             LIMIT 1`,
-            [VISUAL_TEN_QUIZ_VARIANT]
-          )
+        ? quizDbIdOk
+          ? await pool.query(
+              `SELECT * FROM quizzes
+               WHERE id = $1 AND questions::jsonb->>'variant' = $2`,
+              [quizDbIdParsed, VISUAL_TEN_QUIZ_VARIANT]
+            )
+          : await pool.query(
+              `SELECT * FROM quizzes
+               WHERE questions::jsonb->>'variant' = $1
+               ORDER BY created_at DESC
+               LIMIT 1`,
+              [VISUAL_TEN_QUIZ_VARIANT]
+            )
         : await pool.query(
             `SELECT * FROM quizzes
              WHERE (questions::jsonb->>'variant' IS DISTINCT FROM $1)
@@ -2322,6 +2524,10 @@ app.post("/api/quiz/answer", async (req, res) => {
           );
 
     if (result.rows.length === 0) {
+      if (quizVariantRaw === VISUAL_TEN_QUIZ_VARIANT && quizDbIdOk) {
+        res.status(404).json({ error: "Quiz not found" });
+        return;
+      }
       res.status(200).json({ correct: false, points: 0 });
       return;
     }
@@ -3279,7 +3485,10 @@ app.post("/api/internal/generate-visual-10-quiz", async (req, res) => {
           serializeQuizForStorage(
             parsed.sharedImage ?? null,
             parsed.questions,
-            { variant: VISUAL_TEN_QUIZ_VARIANT }
+            {
+              variant: VISUAL_TEN_QUIZ_VARIANT,
+              archiveLabel: buildVisualArchiveLabel(parsed.questions, new Date()),
+            }
           ),
           difficulty,
         ]

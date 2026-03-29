@@ -230,3 +230,9 @@
   color: #111827 !important;
   background: #f3f4f6 !important;
 }
+
+#gruble-visual-quiz-root button.vq-archive-item:hover {
+  color: #1c1012 !important;
+  background: #ffe8df !important;
+  border-color: rgba(255, 107, 69, 0.45) !important;
+}
