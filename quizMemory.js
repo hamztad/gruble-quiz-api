@@ -6,7 +6,7 @@
  */
 
 /** Maks antall historiske rader for sammenligning. */
-const MEMORY_HISTORY_LIMIT = 1200;
+const MEMORY_HISTORY_LIMIT = 2400;
 
 /** Maks tegn i normalisert streng for Levenshtein på spørsmål. */
 const LEV_MAX_LEN = 320;
@@ -15,6 +15,8 @@ const QUIZ_MEMORY_MODE = {
   DAILY: "daily",
   CUSTOM: "custom",
 };
+
+const VISUAL_TEN_QUIZ_VARIANT = "visual-10";
 
 /** Logget som avvisningsårsak (samme navn i histogram). */
 const MEMORY_REJECT_REASON = {
@@ -45,6 +47,11 @@ function normalizeThemeForMemory(theme) {
     .trim()
     .replace(/\s+/g, " ")
     .slice(0, 200);
+}
+
+function normalizeSubthemeForMemory(rawSubtheme, fallbackTheme = "") {
+  const sub = normalizeThemeForMemory(rawSubtheme);
+  return sub || normalizeThemeForMemory(fallbackTheme);
 }
 
 /**
@@ -143,6 +150,25 @@ function normalizedFactKeysTooSimilar(fkA, fkB) {
   }
 
   return false;
+}
+
+function deriveFactFamilyNormalized(fkNorm, subthemeNorm = "") {
+  const fk = String(fkNorm ?? "").trim();
+  if (!fk) {
+    return "";
+  }
+  const parts = fk.split("|").filter(Boolean);
+  if (parts.length === 0) {
+    return "";
+  }
+  if (subthemeNorm) {
+    const family = parts[0] === subthemeNorm && parts[1] ? parts[1] : parts[0];
+    return family ? `${subthemeNorm}|${family}` : subthemeNorm;
+  }
+  if (parts.length >= 2) {
+    return `${parts[0]}|${parts[1]}`;
+  }
+  return parts[0];
 }
 
 function logMemory(line) {
@@ -276,7 +302,14 @@ function normalizedAnswersTooSimilar(normA, normB, mode) {
 }
 
 /**
- * @typedef {{ question: string, answer: string, factKey: string }} MemoryRowNorm
+ * @typedef {{
+ *   question: string,
+ *   answer: string,
+ *   factKey: string,
+ *   subtheme: string,
+ *   variant: string,
+ *   factFamily: string
+ * }} MemoryRowNorm
  */
 
 /**
@@ -286,9 +319,33 @@ function normalizedAnswersTooSimilar(normA, normB, mode) {
  * @param {string} fkNorm
  * @param {MemoryRowNorm[]} rows
  * @param {'daily'|'custom'} mode
+ * @param {{ subtheme?: string, variant?: string, factFamily?: string } | null} meta
  * @returns {{ reason: string, detail: string } | null}
  */
-function findMemoryConflict(normQ, normA, fkNorm, rows, mode) {
+function findMemoryConflict(normQ, normA, fkNorm, rows, mode, meta = null) {
+  const variant = String(meta?.variant ?? "").trim();
+  const subtheme = String(meta?.subtheme ?? "").trim();
+  const factFamily = String(meta?.factFamily ?? "").trim();
+  const isVisualTenSubtheme = variant === VISUAL_TEN_QUIZ_VARIANT && Boolean(subtheme);
+
+  if (isVisualTenSubtheme) {
+    for (let i = 0; i < rows.length; i += 1) {
+      const r = rows[i];
+      if (
+        r.variant === VISUAL_TEN_QUIZ_VARIANT &&
+        r.subtheme === subtheme &&
+        factFamily &&
+        r.factFamily &&
+        r.factFamily === factFamily
+      ) {
+        return {
+          reason: MEMORY_REJECT_REASON.FACT_KEY,
+          detail: "same_subtheme_fact_family",
+        };
+      }
+    }
+  }
+
   if (fkNorm) {
     for (let i = 0; i < rows.length; i += 1) {
       const r = rows[i];
@@ -308,6 +365,25 @@ function findMemoryConflict(normQ, normA, fkNorm, rows, mode) {
         reason: MEMORY_REJECT_REASON.QUESTION_ANSWER,
         detail: "exact_question_answer_pair",
       };
+    }
+  }
+
+  if (isVisualTenSubtheme) {
+    for (let i = 0; i < rows.length; i += 1) {
+      const r = rows[i];
+      if (r.variant !== VISUAL_TEN_QUIZ_VARIANT || r.subtheme !== subtheme) {
+        continue;
+      }
+      const answerClose = normalizedAnswersTooSimilar(normA, r.answer, QUIZ_MEMORY_MODE.DAILY);
+      const textClose =
+        normalizedQuestionsTooSimilar(normQ, r.question, QUIZ_MEMORY_MODE.DAILY) ||
+        tokenJaccardSimilarity(normQ, r.question) >= 0.58;
+      if (answerClose && textClose) {
+        return {
+          reason: MEMORY_REJECT_REASON.QUESTION_ANSWER,
+          detail: "same_subtheme_near_duplicate",
+        };
+      }
     }
   }
 
@@ -351,7 +427,10 @@ async function fetchQuizMemoryHistoryRows(pool) {
   const r = await pool.query(
     `SELECT question_normalized,
             COALESCE(answer_normalized, '') AS answer_normalized,
-            COALESCE(fact_key_normalized, '') AS fact_key_normalized
+            COALESCE(fact_key_normalized, '') AS fact_key_normalized,
+            COALESCE(subtheme_normalized, '') AS subtheme_normalized,
+            COALESCE(quiz_variant, '') AS quiz_variant,
+            COALESCE(fact_family_normalized, '') AS fact_family_normalized
      FROM quiz_question_memory
      ORDER BY created_at DESC
      LIMIT $1`,
@@ -361,6 +440,9 @@ async function fetchQuizMemoryHistoryRows(pool) {
     question: String(row.question_normalized ?? ""),
     answer: String(row.answer_normalized ?? ""),
     factKey: String(row.fact_key_normalized ?? "").trim(),
+    subtheme: String(row.subtheme_normalized ?? "").trim(),
+    variant: String(row.quiz_variant ?? "").trim(),
+    factFamily: String(row.fact_family_normalized ?? "").trim(),
   }));
 }
 
@@ -370,13 +452,15 @@ async function fetchQuizMemoryHistoryRows(pool) {
  * @param {string} theme
  * @param {'daily'|'custom'} mode
  * @param {object[]|null} priorAcceptedQuestions allerede godkjente spørsmål (kun duplikatkontroll mot nye)
+ * @param {{ variant?: string, useSourceTheme?: boolean }|null} generationMeta
  */
 async function filterQuizQuestionsAgainstMemory(
   pool,
   questions,
   theme,
   mode,
-  priorAcceptedQuestions = null
+  priorAcceptedQuestions = null,
+  generationMeta = null
 ) {
   const m =
     mode === QUIZ_MEMORY_MODE.DAILY
@@ -413,11 +497,20 @@ async function filterQuizQuestionsAgainstMemory(
       const pnQ = normalizeQuizQuestionText(pq?.question);
       const pnA = normalizeQuizAnswerText(pq?.answer);
       const pFk = normalizeFactKey(pq?.fact_key);
+      const pSubtheme = normalizeSubthemeForMemory(
+        generationMeta?.useSourceTheme ? pq?.source_theme : "",
+        theme
+      );
+      const pVariant = String(generationMeta?.variant ?? "").trim();
+      const pFactFamily = deriveFactFamilyNormalized(pFk, pSubtheme);
       if (pnQ && pnA) {
         acceptedRows.push({
           question: pnQ,
           answer: pnA,
           factKey: pFk,
+          subtheme: pSubtheme,
+          variant: pVariant,
+          factFamily: pFactFamily,
         });
       }
     }
@@ -433,7 +526,7 @@ async function filterQuizQuestionsAgainstMemory(
   };
 
   logMemory(
-    `mode=${m} theme=${JSON.stringify(normalizeThemeForMemory(theme))} historyRows=${historyRows.length} priorSeeded=${priorSeeded} checked=${questions.length}`
+    `mode=${m} theme=${JSON.stringify(normalizeThemeForMemory(theme))} variant=${JSON.stringify(String(generationMeta?.variant ?? ""))} historyRows=${historyRows.length} priorSeeded=${priorSeeded} checked=${questions.length}`
   );
 
   for (let i = 0; i < questions.length; i += 1) {
@@ -443,6 +536,12 @@ async function filterQuizQuestionsAgainstMemory(
     const normQ = normalizeQuizQuestionText(rawQ);
     const normA = normalizeQuizAnswerText(rawA);
     const fkNorm = normalizeFactKey(q?.fact_key);
+    const subthemeNorm = normalizeSubthemeForMemory(
+      generationMeta?.useSourceTheme ? q?.source_theme : "",
+      theme
+    );
+    const variant = String(generationMeta?.variant ?? "").trim();
+    const factFamilyNorm = deriveFactFamilyNormalized(fkNorm, subthemeNorm);
 
     if (!normQ) {
       rejected += 1;
@@ -459,7 +558,11 @@ async function filterQuizQuestionsAgainstMemory(
       continue;
     }
 
-    const internal = findMemoryConflict(normQ, normA, fkNorm, acceptedRows, m);
+    const internal = findMemoryConflict(normQ, normA, fkNorm, acceptedRows, m, {
+      subtheme: subthemeNorm,
+      variant,
+      factFamily: factFamilyNorm,
+    });
     if (internal) {
       rejected += 1;
       reasonHistogram[internal.reason] =
@@ -471,7 +574,11 @@ async function filterQuizQuestionsAgainstMemory(
       continue;
     }
 
-    const hist = findMemoryConflict(normQ, normA, fkNorm, historyRows, m);
+    const hist = findMemoryConflict(normQ, normA, fkNorm, historyRows, m, {
+      subtheme: subthemeNorm,
+      variant,
+      factFamily: factFamilyNorm,
+    });
     if (hist) {
       rejected += 1;
       reasonHistogram[hist.reason] = (reasonHistogram[hist.reason] || 0) + 1;
@@ -487,6 +594,9 @@ async function filterQuizQuestionsAgainstMemory(
       question: normQ,
       answer: normA,
       factKey: fkNorm,
+      subtheme: subthemeNorm,
+      variant,
+      factFamily: factFamilyNorm,
     });
   }
 
@@ -510,13 +620,21 @@ async function filterQuizQuestionsAgainstMemory(
  * @param {string} theme
  * @param {object[]} questions
  * @param {'daily'|'custom'} quizSource
+ * @param {{ variant?: string, useSourceTheme?: boolean }|null} extra
  */
-async function insertQuizQuestionMemoryRows(client, theme, questions, quizSource) {
+async function insertQuizQuestionMemoryRows(
+  client,
+  theme,
+  questions,
+  quizSource,
+  extra = null
+) {
   const src =
     quizSource === QUIZ_MEMORY_MODE.DAILY
       ? QUIZ_MEMORY_MODE.DAILY
       : QUIZ_MEMORY_MODE.CUSTOM;
   const themeNorm = normalizeThemeForMemory(theme);
+  const variant = String(extra?.variant ?? "").trim();
 
   for (let i = 0; i < questions.length; i += 1) {
     const q = questions[i];
@@ -525,20 +643,39 @@ async function insertQuizQuestionMemoryRows(client, theme, questions, quizSource
     const origA = String(q?.answer ?? "").trim();
     const normA = normalizeQuizAnswerText(origA);
     const fkNorm = normalizeFactKey(q?.fact_key);
+    const subthemeNorm = normalizeSubthemeForMemory(
+      extra?.useSourceTheme ? q?.source_theme : "",
+      themeNorm
+    );
+    const factFamilyNorm = deriveFactFamilyNormalized(fkNorm, subthemeNorm);
     if (!normQ || !normA) {
       continue;
     }
     await client.query(
       `INSERT INTO quiz_question_memory (
         theme_normalized,
+        subtheme_normalized,
         question_original,
         question_normalized,
         answer_original,
         answer_normalized,
         fact_key_normalized,
-        quiz_source
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [themeNorm, origQ, normQ, origA, normA, fkNorm || "", src]
+        fact_family_normalized,
+        quiz_source,
+        quiz_variant
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        themeNorm,
+        subthemeNorm,
+        origQ,
+        normQ,
+        origA,
+        normA,
+        fkNorm || "",
+        factFamilyNorm,
+        src,
+        variant,
+      ]
     );
   }
 }

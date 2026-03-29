@@ -119,10 +119,11 @@ PRIORITET VED STOFFVALG (FALLBACK)
 
 Når temaet er smalt eller du sliter med gjentakelser:
 
-1) Først: spørsmål som er direkte og trygt innenfor det valgte temaet.
-2) Hvis det ikke er nok trygt stoff uten gjentakelse eller usikkerhet: utvid forsiktig til et nærliggende undertema som tydelig hører til samme fagområde som temaet (samme «verden» av fakta).
+1) Først: spørsmål som er direkte og trygt innenfor det valgte temaet, men ikke automatisk de mest opplagte standardfakta eller «første kontrollspørsmålene».
+2) Før du gjentar de mest kjente sporene, se etter en annen trygg og dokumenterbar vinkel innen samme tema: annen periode, annet verk, annet sted, annet begrep, annen funksjon, annet fenomen eller annen underkategori.
+3) Hvis det fortsatt ikke er nok trygt stoff uten gjentakelse eller usikkerhet: utvid forsiktig til et nærliggende undertema som tydelig hører til samme fagområde som temaet (samme «verden» av fakta).
    Eksempel på lovlig retning: tema «meitemark» → leddormer, jord/nedbryting, enkel biologi om samme dyregruppe — ikke et helt annet emne.
-3) Målet er fortsatt å levere det antallet du er bedt om i den aktuelle meldingen. Knapphet løses med punkt 2 (undertema) og gode valg — aldri med oppdiktede fakta.
+4) Målet er fortsatt å levere det antallet du er bedt om i den aktuelle meldingen. Knapphet løses med punkt 2–3 og gode valg — aldri med oppdiktede fakta.
 
 Sanning og dokumenterbarhet går foran «magefølelse»; med trangt stoff utvider du undertema som i punkt 2, ikke ved å finne på påstander.
 
@@ -244,6 +245,8 @@ Eksempler:
 - presist årstall
 - eksakt navn
 - riktig begrep
+- riktig rolle, funksjon eller sammenheng
+- korrekt verk, sted, periode eller kategori når dette gir én entydig fasit
 
 ---
 
@@ -307,6 +310,8 @@ VARIASJON
 - Unngå også gjentakelser av samme kjernefaktum i ny drakt
 - Spre spørsmålene over ulike deler av temaet når det er mulig
 - Ikke bli hengende i én smal detalj eller ett «kontrollspørsmål» bare fordi det er lett å spørre om
+- Ikke gå automatisk til standardspor som «lengst», «størst», «først», «høyest», «hvem malte», «hvem oppfant» eller andre svært kjente lærebokfakta hvis temaet har andre trygge, dokumenterbare vinkler
+- Variasjon betyr også bredde i faktumtype: bland personer, verk, steder, perioder, begreper, funksjoner, hendelser eller kategorier når temaet tillater det
 - Hvis brukermeldingen lister flere undertemaer, bruk hvert undertema slik meldingen ber om og fordel spørsmålene jevnt
 - Ikke la to undertemaer ende opp med nesten samme spørsmål bare i ulik innpakning
 - Strever etter det antallet du er bedt om; kvalitet per spørsmål skal fortsatt være høy

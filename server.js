@@ -119,23 +119,274 @@ const VISUAL_TEN_QUIZ_QUESTION_COUNT = 10;
 /** Lagres som quiz-radens tema og i JSON; spørsmål 1–9 har egne undertemaer. */
 const VISUAL_TEN_DISPLAY_THEME = "Allmenn quiz";
 const VISUAL_TEN_BATCH_SIZE = 3;
-const VISUAL_TEN_RECENT_QUIZ_COOLING_LIMIT = 4;
+const VISUAL_TEN_RECENT_QUIZ_COOLING_LIMIT = 12;
+const VISUAL_TEN_RECENT_AVOID_PER_THEME = 3;
 const VISUAL_TEN_IMAGE_PICK_TRIES = 10;
 const VISUAL_TEN_THEME_PRESETS = Object.freeze([
-  { theme: "historie", weight: 18, subjectMode: true },
-  { theme: "geografi", weight: 16, subjectMode: true },
-  { theme: "naturfag", weight: 16, subjectMode: true },
-  { theme: "kunst", weight: 12, subjectMode: true },
-  { theme: "musikk", weight: 11, subjectMode: false },
-  { theme: "dyr", weight: 10, subjectMode: false },
-  { theme: "litteratur", weight: 10, subjectMode: false },
-  { theme: "arkitektur", weight: 9, subjectMode: false },
-  { theme: "idrett", weight: 9, subjectMode: false },
-  { theme: "romfart", weight: 7, subjectMode: false },
-  { theme: "teknologi", weight: 7, subjectMode: false },
-  { theme: "oppfinnelser", weight: 6, subjectMode: false },
-  { theme: "mytologi", weight: 6, subjectMode: false },
-  { theme: "verdensarv", weight: 6, subjectMode: false },
+  {
+    theme: "historie",
+    weight: 10,
+    subjectMode: true,
+    focusPool: [
+      "epoker og perioder",
+      "samfunn og styresett",
+      "oppdagelser og ekspedisjoner",
+      "handel og kulturmøter",
+      "konkrete hendelser",
+    ],
+  },
+  {
+    theme: "geografi",
+    weight: 10,
+    subjectMode: true,
+    focusPool: [
+      "landformer og regioner",
+      "elver og innsjøer",
+      "hav og kyster",
+      "grenser og plassering",
+      "klima og naturforhold",
+    ],
+  },
+  {
+    theme: "naturfag",
+    weight: 10,
+    subjectMode: true,
+    focusPool: [
+      "grunnstoffer og stoffer",
+      "kropp og biologi",
+      "energi og krefter",
+      "jord og naturprosesser",
+      "naturfaglige begreper",
+    ],
+  },
+  {
+    theme: "kunst",
+    weight: 9,
+    subjectMode: true,
+    focusPool: [
+      "verk og motiver",
+      "kunstretninger",
+      "teknikker og materialer",
+      "museer og samlinger",
+      "perioder og tradisjoner",
+    ],
+  },
+  {
+    theme: "musikk",
+    weight: 8,
+    subjectMode: false,
+    focusPool: [
+      "instrumenter",
+      "sjangre og perioder",
+      "verk og komposisjoner",
+      "artister og band",
+      "musikkbegreper",
+    ],
+  },
+  {
+    theme: "dyr",
+    weight: 8,
+    subjectMode: false,
+    focusPool: [
+      "leveområder",
+      "kjennetegn",
+      "grupper og arter",
+      "atferd og tilpasning",
+      "navn og klassifisering",
+    ],
+  },
+  {
+    theme: "litteratur",
+    weight: 8,
+    subjectMode: false,
+    focusPool: [
+      "forfattere og verk",
+      "figurer og handling",
+      "epoker og retninger",
+      "litterære begreper",
+      "titler og sjangre",
+    ],
+  },
+  {
+    theme: "arkitektur",
+    weight: 7,
+    subjectMode: false,
+    focusPool: [
+      "byggverk",
+      "stilarter",
+      "arkitekter",
+      "materialer og former",
+      "byer og steder",
+    ],
+  },
+  {
+    theme: "idrett",
+    weight: 7,
+    subjectMode: false,
+    focusPool: [
+      "regler og utstyr",
+      "turneringer",
+      "utøvere",
+      "arenaer og steder",
+      "rekorder og milepæler",
+    ],
+  },
+  {
+    theme: "romfart",
+    weight: 7,
+    subjectMode: false,
+    focusPool: [
+      "oppdrag og sonder",
+      "romorganisasjoner",
+      "farkoster",
+      "planeter og måner",
+      "historiske milepæler",
+    ],
+  },
+  {
+    theme: "teknologi",
+    weight: 7,
+    subjectMode: false,
+    focusPool: [
+      "digitale begreper",
+      "maskinvare",
+      "nettverk og kommunikasjon",
+      "teknologihistorie",
+      "oppfinnelser og bruk",
+    ],
+  },
+  {
+    theme: "oppfinnelser",
+    weight: 7,
+    subjectMode: false,
+    focusPool: [
+      "oppfinnere",
+      "bruksområder",
+      "historiske gjennombrudd",
+      "materialer og mekanikk",
+      "navn og begreper",
+    ],
+  },
+  {
+    theme: "mytologi",
+    weight: 6,
+    subjectMode: false,
+    focusPool: [
+      "guder og vesener",
+      "mytiske steder",
+      "fortellinger og symboler",
+      "norrøn mytologi",
+      "gresk og romersk mytologi",
+    ],
+  },
+  {
+    theme: "verdensarv",
+    weight: 6,
+    subjectMode: false,
+    focusPool: [
+      "steder og land",
+      "kulturarv",
+      "naturarv",
+      "historisk betydning",
+      "arkitektur og landskap",
+    ],
+  },
+  {
+    theme: "film",
+    weight: 6,
+    subjectMode: false,
+    focusPool: [
+      "regissører og filmer",
+      "figurer og roller",
+      "sjangre",
+      "filmhistorie",
+      "priser og festivaler",
+    ],
+  },
+  {
+    theme: "språk",
+    weight: 6,
+    subjectMode: false,
+    focusPool: [
+      "skrift og alfabet",
+      "ord og begreper",
+      "språkfamilier",
+      "grammatiske trekk",
+      "utbredelse og status",
+    ],
+  },
+  {
+    theme: "botanikk",
+    weight: 6,
+    subjectMode: false,
+    focusPool: [
+      "plantegrupper",
+      "deler av planten",
+      "leveområder",
+      "nytteplanter",
+      "blomster og trær",
+    ],
+  },
+  {
+    theme: "sjøfart",
+    weight: 5,
+    subjectMode: false,
+    focusPool: [
+      "skipstyper",
+      "historiske ruter",
+      "havner og farvann",
+      "navigasjon",
+      "utforskning",
+    ],
+  },
+  {
+    theme: "mat og drikke",
+    weight: 5,
+    subjectMode: false,
+    focusPool: [
+      "råvarer",
+      "retter og tradisjoner",
+      "land og regioner",
+      "tilberedning",
+      "navn og begreper",
+    ],
+  },
+  {
+    theme: "teater",
+    weight: 5,
+    subjectMode: false,
+    focusPool: [
+      "dramatikere",
+      "verk og figurer",
+      "scene og uttrykk",
+      "teaterhistorie",
+      "sjangre og former",
+    ],
+  },
+  {
+    theme: "religion",
+    weight: 5,
+    subjectMode: false,
+    focusPool: [
+      "høytider",
+      "steder og symboler",
+      "tekster og begreper",
+      "historiske retninger",
+      "skikker og praksis",
+    ],
+  },
+  {
+    theme: "design",
+    weight: 5,
+    subjectMode: false,
+    focusPool: [
+      "stilarter",
+      "objekter og produkter",
+      "designere",
+      "materialer og former",
+      "historiske perioder",
+    ],
+  },
 ]);
 
 function getQuizMemoryRuntime(memoryOptions) {
@@ -211,6 +462,23 @@ function pickWeightedVisualTenThemePresetWithCooling(
   return VISUAL_TEN_THEME_PRESETS[VISUAL_TEN_THEME_PRESETS.length - 1];
 }
 
+function pickVisualTenFocusForPreset(preset) {
+  const pool = Array.isArray(preset?.focusPool) ? preset.focusPool : [];
+  if (pool.length === 0) {
+    return "";
+  }
+  const idx = Math.floor(Math.random() * pool.length);
+  return String(pool[idx] ?? "").trim();
+}
+
+function buildVisualTenSlotFromPreset(preset) {
+  return {
+    theme: String(preset?.theme ?? "").trim(),
+    subjectMode: preset?.subjectMode === true,
+    focus: pickVisualTenFocusForPreset(preset),
+  };
+}
+
 /**
  * Trekker undertemaer uten duplikater i samme bilde-quiz.
  * Det gir bredere variasjon i én og samme runde, men ulik miks mellom runder.
@@ -228,11 +496,13 @@ function pickWeightedVisualTenThemePresetsMany(count, recentThemeCounts = null) 
       break;
     }
     excludedThemes.add(picked.theme);
-    out.push(picked);
+    out.push(buildVisualTenSlotFromPreset(picked));
   }
   while (out.length < n) {
     out.push(
-      pickWeightedVisualTenThemePresetWithCooling(recentThemeCounts, new Set())
+      buildVisualTenSlotFromPreset(
+        pickWeightedVisualTenThemePresetWithCooling(recentThemeCounts, new Set())
+      )
     );
   }
   return out;
@@ -375,9 +645,9 @@ function stripFactKeyFromQuizPayload(payload) {
   };
 }
 
-async function fetchRecentVisualTenThemeCounts(pool) {
+async function fetchRecentVisualTenHistory(pool) {
   if (!pool || typeof pool.query !== "function") {
-    return {};
+    return { themeCounts: {}, recentByTheme: {} };
   }
   try {
     const result = await pool.query(
@@ -389,24 +659,35 @@ async function fetchRecentVisualTenThemeCounts(pool) {
       [VISUAL_TEN_QUIZ_VARIANT, VISUAL_TEN_RECENT_QUIZ_COOLING_LIMIT]
     );
     const counts = {};
+    const recentByTheme = {};
     for (const row of result.rows) {
       const payload = getQuizQuestionsPayloadFromRow(row);
       const qs = Array.isArray(payload?.questions) ? payload.questions : [];
       for (const q of qs) {
         const theme = String(q?.source_theme ?? "").trim();
-        if (!theme) {
+        if (!theme || q?.imageQuestion === true) {
           continue;
         }
         counts[theme] = (counts[theme] || 0) + 1;
+        if (!recentByTheme[theme]) {
+          recentByTheme[theme] = [];
+        }
+        if (recentByTheme[theme].length < VISUAL_TEN_RECENT_AVOID_PER_THEME) {
+          recentByTheme[theme].push({
+            question: String(q?.question ?? "").trim(),
+            answer: String(q?.answer ?? "").trim(),
+            fact_key: String(q?.fact_key ?? "").trim(),
+          });
+        }
       }
     }
-    return counts;
+    return { themeCounts: counts, recentByTheme };
   } catch (err) {
     console.warn(
       "[visual-10] recent theme counts unavailable:",
       err && typeof err.message === "string" ? err.message : String(err)
     );
-    return {};
+    return { themeCounts: {}, recentByTheme: {} };
   }
 }
 
@@ -420,14 +701,22 @@ function chunkArray(values, size) {
   return out;
 }
 
-function buildVisualTenBatchUserPrompt(slots, existingQuestions, difficulty) {
+function buildVisualTenBatchUserPrompt(
+  slots,
+  existingQuestions,
+  difficulty,
+  recentByTheme = null,
+  attempt = 0
+) {
   const diffNorm = normalizeQuizDifficulty(difficulty);
   const diffHuman =
     diffNorm === "easy" ? "lett" : diffNorm === "hard" ? "vanskelig" : "normal";
   const slotLines = slots
     .map(
       (slot, idx) =>
-        `${idx + 1}. ${JSON.stringify(slot.theme)} (${slot.subjectMode ? "fagmodus" : "allmennmodus"})`
+        `${idx + 1}. ${JSON.stringify(slot.theme)} (${slot.subjectMode ? "faglig modus" : "åpen modus"})${
+          slot?.focus ? ` — vinkel: ${JSON.stringify(slot.focus)}` : ""
+        }`
     )
     .join("\n");
   const existingLines =
@@ -439,6 +728,16 @@ function buildVisualTenBatchUserPrompt(slots, existingQuestions, difficulty) {
           )
           .join("\n")
       : "";
+  const recentLines = slots
+    .flatMap((slot) => {
+      const theme = String(slot?.theme ?? "").trim();
+      const entries = Array.isArray(recentByTheme?.[theme]) ? recentByTheme[theme] : [];
+      return entries.map(
+        (q, idx) =>
+          `${theme} #${idx + 1}: spørsmål=${JSON.stringify(String(q?.question ?? ""))} fasit=${JSON.stringify(String(q?.answer ?? ""))} fact_key=${JSON.stringify(String(q?.fact_key ?? ""))}`
+      );
+    })
+    .join("\n");
 
   return `Du lager delspørsmål 1–9 i en allmenn bilde-quiz.
 
@@ -453,22 +752,42 @@ For hvert spørsmål i "questions":
 - legg inn feltet "source_theme" med eksakt undertema-streng
 - legg inn feltene id, question, options, answer, fact_key
 - fact_key er obligatorisk og skal beskrive kjernefaktumet
+- fact_key skal starte med source_theme som første segment, og segment nummer to skal beskrive faktumfamilien, for eksempel kunst|verk|..., geografi|landform|..., romfart|oppdrag|...
 - spørsmålene må være fullt selvstendige, dokumenterbare og ha én klar fasit
 - ikke knytt spørsmålene til illustrasjonsbildet; det kommer først i spørsmål 10
+- bruk gjerne vinkelen som står ved undertemaet som kreativ styring, men ikke skriv vinkelen inn i spørsmålet hvis det blir klønete
 
-Fagmodus betyr at undertemaet skal tolkes som skolefag eller undervisningsstoff, ikke løs trivia.
-Allmennmodus betyr vanlig allmennkunnskap.
+Faglig modus betyr bred, dokumenterbar fagkunnskap om undertemaet.
+Det betyr ikke at du skal velge standard skolebok-kontrollspørsmål eller de mest kjente «første fakta».
+Åpen modus betyr vanlig allmennkunnskap, men med samme krav om bredde og variasjon.
 
 Variasjon er svært viktig:
 - ett spørsmål per undertema, ikke flere vinkler på samme detalj
 - ikke gjenbruk samme kjernefaktum mellom undertemaene
 - unngå overbrukte kontrollspørsmål og smal trivia når bredere, mer relevante fakta finnes
 - spre spørsmålene over ulike deler av undertemaene når mulig
+- unngå særlig de mest kjente standardsporene som "lengst/størst/høyest/først", "hvem malte", "hvem oppfant", "hva er hovedstaden", med mindre undertemaet nesten krever det
+- foretrekk mindre opplagte, men fortsatt trygge og dokumenterbare vinkler foran de mest berømte standardfakta
+- ikke la samme svarperson, verk, elv, planet, oppfinnelse eller lignende gå igjen i ny drakt innen samme undertema
+
+${
+  attempt > 0
+    ? `Tidligere forslag ble avvist fordi de var for like nylige eller for stereotype.
+Denne gangen skal du bevisst styre mot en mindre opplagt vinkel i hvert undertema og unngå standard kontrollspørsmål.`
+    : ""
+}
 
 ${
   existingLines
     ? `Allerede brukt i denne quizen (ikke gjenta samme faktum, formulering eller nærvariant):
 ${existingLines}
+`
+    : ""
+}
+${
+  recentLines
+    ? `Nylig brukt i disse undertemaene (styr unna samme svar, fact_key-familie og kontrollspørsmål):
+${recentLines}
 `
     : ""
 }
@@ -588,6 +907,22 @@ async function setupTestTable() {
     await pool.query(`
       ALTER TABLE quiz_question_memory
       ADD COLUMN IF NOT EXISTS fact_key_normalized TEXT NOT NULL DEFAULT ''
+    `);
+    await pool.query(`
+      ALTER TABLE quiz_question_memory
+      ADD COLUMN IF NOT EXISTS subtheme_normalized TEXT NOT NULL DEFAULT ''
+    `);
+    await pool.query(`
+      ALTER TABLE quiz_question_memory
+      ADD COLUMN IF NOT EXISTS quiz_variant TEXT NOT NULL DEFAULT ''
+    `);
+    await pool.query(`
+      ALTER TABLE quiz_question_memory
+      ADD COLUMN IF NOT EXISTS fact_family_normalized TEXT NOT NULL DEFAULT ''
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_quiz_question_memory_variant_subtheme_created
+      ON quiz_question_memory (quiz_variant, subtheme_normalized, created_at DESC)
     `);
     await pool.query("INSERT INTO test (message) VALUES ($1)", [
       "Hello from Gruble",
@@ -1882,14 +2217,20 @@ async function generateVisualTenQuestionBatch(
   let accepted = [];
   let pendingSlots = [...slots];
   let lastError = null;
-  const maxAttempts = 10;
+  const maxAttempts = 12;
   const batchStartedAt = Date.now();
+  const recentByTheme =
+    memoryOptions && typeof memoryOptions === "object" && memoryOptions.recentByTheme
+      ? memoryOptions.recentByTheme
+      : null;
 
   for (let attempt = 0; attempt < maxAttempts && pendingSlots.length > 0; attempt += 1) {
     const prompt = buildVisualTenBatchUserPrompt(
       pendingSlots,
       [...(priorAcceptedQuestions || []), ...accepted],
-      diffNorm
+      diffNorm,
+      recentByTheme,
+      attempt
     );
     let parsed;
     try {
@@ -1952,7 +2293,11 @@ async function generateVisualTenQuestionBatch(
       shuffled,
       VISUAL_TEN_DISPLAY_THEME,
       memMode,
-      [...(priorAcceptedQuestions || []), ...accepted]
+      [...(priorAcceptedQuestions || []), ...accepted],
+      {
+        variant: VISUAL_TEN_QUIZ_VARIANT,
+        useSourceTheme: true,
+      }
     );
     if (memResult.questions.length === 0) {
       lastError = "all visual-10 batch questions rejected as duplicates";
@@ -2080,9 +2425,15 @@ async function buildVisualTenQuizAttempt(
   const diffNorm = normalizeQuizDifficulty(difficulty);
   const displayTheme = VISUAL_TEN_DISPLAY_THEME;
   const { mode: memMode, pool: memoryPool } = getQuizMemoryRuntime(memoryOptions);
-  const recentThemeCounts = await fetchRecentVisualTenThemeCounts(memoryPool);
+  const recentVisualHistory = await fetchRecentVisualTenHistory(memoryPool);
+  const recentThemeCounts = recentVisualHistory.themeCounts;
   console.log(
     `[visual-10] recentThemeCounts=${JSON.stringify(recentThemeCounts)}`
+  );
+  console.log(
+    `[visual-10] recentAvoidThemes=${JSON.stringify(
+      Object.keys(recentVisualHistory.recentByTheme || {})
+    )}`
   );
   const nineSlots = pickWeightedVisualTenThemePresetsMany(9, recentThemeCounts);
   const batchPlans = chunkArray(nineSlots, VISUAL_TEN_BATCH_SIZE);
@@ -2094,6 +2445,7 @@ async function buildVisualTenQuizAttempt(
       `[visual-10] batch ${batchIdx + 1}/${batchPlans.length} slots=${JSON.stringify(slots.map((slot) => ({
         theme: slot.theme,
         subjectMode: slot.subjectMode === true,
+        focus: slot.focus || "",
       })))}`
     );
     const batchQuestions = await generateVisualTenQuestionBatch(
@@ -2101,7 +2453,10 @@ async function buildVisualTenQuizAttempt(
       model,
       slots,
       nineClean,
-      memoryOptions,
+      {
+        ...((memoryOptions && typeof memoryOptions === "object") ? memoryOptions : {}),
+        recentByTheme: recentVisualHistory.recentByTheme,
+      },
       difficulty
     );
     nineClean.push(...batchQuestions);
@@ -2147,7 +2502,11 @@ async function buildVisualTenQuizAttempt(
       [candidate],
       displayTheme,
       memMode,
-      nineClean
+      nineClean,
+      {
+        variant: VISUAL_TEN_QUIZ_VARIANT,
+        useSourceTheme: true,
+      }
     );
     if (deduped.questions.length > 0) {
       q10 = deduped.questions[0];
@@ -2190,6 +2549,17 @@ async function buildVisualTenQuizAttempt(
 
   console.log(
     `[visual-10 timing] total_duration_ms=${Date.now() - attemptStartedAt}`
+  );
+  console.log(
+    `[visual-10 diversity] themes=${JSON.stringify(
+      allQuestions.map((q) => String(q?.source_theme || "image").trim())
+    )} factFamilies=${JSON.stringify(
+      allQuestions.map((q) => {
+        const fk = normalizeFactKey(q?.fact_key);
+        const parts = fk.split("|").filter(Boolean);
+        return parts.length >= 2 ? `${parts[0]}|${parts[1]}` : fk;
+      })
+    )}`
   );
   return {
     theme: fullPayload.theme,
@@ -3391,7 +3761,8 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
         client,
         parsed.theme,
         parsed.questions,
-        memoryMode
+        memoryMode,
+        { variant: "standard" }
       );
       await client.query("COMMIT");
     } catch (dbErr) {
@@ -3497,7 +3868,11 @@ app.post("/api/internal/generate-visual-10-quiz", async (req, res) => {
         client,
         parsed.theme,
         parsed.questions,
-        memoryMode
+        memoryMode,
+        {
+          variant: VISUAL_TEN_QUIZ_VARIANT,
+          useSourceTheme: true,
+        }
       );
       await client.query("COMMIT");
     } catch (dbErr) {
