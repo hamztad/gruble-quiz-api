@@ -224,7 +224,6 @@ function validateThemeForQuizInput(theme) {
 app.use(express.json());
 app.use(cors());
 app.use("/frontend", express.static(path.join(__dirname, "frontend")));
-app.use("/games/quiz-agent", express.static(path.join(__dirname, "frontend")));
 
 const transcribeUpload = multer({
   storage: multer.memoryStorage(),
@@ -353,19 +352,7 @@ app.get("/", (_req, res) => {
 });
 
 app.get("/prototype", (_req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
-
-app.get("/prototype/visual-quiz", (_req, res) => {
-  res.sendFile(path.join(__dirname, "frontend", "visual-quiz.html"));
-});
-
-app.get("/prototype/visual-quiz.css", (_req, res) => {
-  res.sendFile(path.join(__dirname, "frontend", "visual-quiz.css"));
-});
-
-app.get("/prototype/visual-quiz.js", (_req, res) => {
-  res.sendFile(path.join(__dirname, "frontend", "visual-quiz.js"));
+  res.sendFile(path.join(__dirname, "frontend", "index.html"));
 });
 
 async function evaluateWrittenAnswerWithOpenAI(

@@ -6,8 +6,10 @@
     <title>Quiz — Gruble</title>
     <link rel="stylesheet" href="visual-quiz.css" />
     <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="visual-quiz-shared.css" />
   </head>
   <body class="vq-body vq-strip-minimal">
+    <div id="gruble-visual-quiz-root" class="gruble-visual-quiz">
     <div class="vq-shell">
       <header class="vq-brand">
         <h1 class="vq-brand__title">Quiz</h1>
@@ -29,10 +31,11 @@
         <p class="empty-state">Trykk Start eller Last lagret.</p>
       </div>
     </div>
+    </div>
 
     <div
       id="protest-modal"
-      class="protest-modal protest-modal--hidden"
+      class="protest-modal protest-modal--hidden gruble-visual-quiz-protest"
       aria-hidden="true"
     >
       <div class="protest-modal__backdrop" id="protest-modal-backdrop"></div>

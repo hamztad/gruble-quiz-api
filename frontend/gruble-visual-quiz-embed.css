@@ -1,0 +1,27 @@
+/**
+ * Gruble bilde-quiz — lim inn i WordPress/Elementor (Tilpass → Tilpass CSS)
+ * eller last som eksternt stilark.
+ *
+ * STEG 1: Erstatt BASE_URL med rot-URL der du har lastet opp frontend-filene
+ *         (samme katalog som visual-quiz.html), uten avsluttende slash.
+ *
+ * STEG 2: Hvis @import blir blokkert av WP, lim inn innholdet av de tre filene
+ *         manuelt i rekkefølge: visual-quiz.css → styles.css → visual-quiz-shared.css
+ */
+
+@import url("BASE_URL/visual-quiz.css");
+@import url("BASE_URL/styles.css");
+@import url("BASE_URL/visual-quiz-shared.css");
+
+/* Vanlige tema-konflikter i Elementor */
+.elementor-widget-html #gruble-visual-quiz-root.gruble-visual-quiz {
+  max-width: 100% !important;
+  overflow-x: hidden;
+  box-sizing: border-box;
+}
+
+.elementor-widget-html #gruble-visual-quiz-root.gruble-visual-quiz *,
+.elementor-widget-html #gruble-visual-quiz-root.gruble-visual-quiz *::before,
+.elementor-widget-html #gruble-visual-quiz-root.gruble-visual-quiz *::after {
+  box-sizing: border-box;
+}

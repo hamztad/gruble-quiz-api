@@ -5,6 +5,101 @@ const API_BASE = "https://gruble-quiz-api.onrender.com";
 const QUIZ_VARIANT = "visual-10";
 const QUESTION_COUNT = 10;
 const MAX_PROTEST_USER_MESSAGES = 5;
+const EMBED_HEIGHT_MSG = "gruble-visual-quiz-height";
+
+let embedHeightRaf = null;
+
+function getEmbedPostMessageTarget() {
+  try {
+    const raw = new URLSearchParams(window.location.search).get("embed_parent");
+    if (!raw || !String(raw).trim()) {
+      return "*";
+    }
+    const u = new URL(String(raw).trim());
+    if (u.protocol !== "http:" && u.protocol !== "https:") {
+      return "*";
+    }
+    return u.origin;
+  } catch {
+    return "*";
+  }
+}
+
+function measureDocumentHeightForEmbed() {
+  const docEl = document.documentElement;
+  const body = document.body;
+  let h = Math.max(
+    docEl?.scrollHeight ?? 0,
+    body?.scrollHeight ?? 0,
+    docEl?.offsetHeight ?? 0,
+    body?.offsetHeight ?? 0
+  );
+  const modal = document.getElementById("protest-modal");
+  if (
+    modal &&
+    !modal.classList.contains("protest-modal--hidden") &&
+    modal.getAttribute("aria-hidden") !== "true"
+  ) {
+    h = Math.max(h, window.innerHeight);
+  }
+  return Math.ceil(Math.max(h, 320));
+}
+
+function scheduleNotifyEmbedHeight() {
+  if (window.parent === window) {
+    return;
+  }
+  if (embedHeightRaf != null) {
+    cancelAnimationFrame(embedHeightRaf);
+  }
+  embedHeightRaf = requestAnimationFrame(() => {
+    embedHeightRaf = null;
+    window.parent.postMessage(
+      {
+        type: EMBED_HEIGHT_MSG,
+        height: measureDocumentHeightForEmbed(),
+      },
+      getEmbedPostMessageTarget()
+    );
+  });
+}
+
+function afterDomUpdateNotifyEmbed() {
+  if (window.parent === window) {
+    return;
+  }
+  queueMicrotask(() => {
+    requestAnimationFrame(() => scheduleNotifyEmbedHeight());
+  });
+}
+
+function initEmbedParentHeightBridge() {
+  if (window.parent === window) {
+    return;
+  }
+  document.documentElement.classList.add("vq-embed-child");
+
+  if (typeof ResizeObserver !== "undefined") {
+    const ro = new ResizeObserver(() => scheduleNotifyEmbedHeight());
+    ro.observe(document.documentElement);
+    if (document.body) {
+      ro.observe(document.body);
+    }
+  }
+
+  window.addEventListener("load", () => scheduleNotifyEmbedHeight(), {
+    once: true,
+  });
+  document.addEventListener(
+    "load",
+    (ev) => {
+      if (ev.target?.tagName === "IMG") {
+        scheduleNotifyEmbedHeight();
+      }
+    },
+    true
+  );
+}
 
 const VOICE_SVG_MIC = `<svg class="voice-mic-btn__svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6.2 6.72V21h2v-3.28c3.48-.49 6.2-3.31 6.2-6.72h-1.7z"/></svg>`;
 const VOICE_SVG_STOP = `<svg class="voice-mic-btn__svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 6h12v12H6V6z"/></svg>`;
@@ -614,17 +709,20 @@ async function loadVisualQuiz() {
   const el = document.getElementById("visual-app");
   el.innerHTML =
     "<p class=\"empty-state\"><span class=\"vq-spinner\" aria-hidden=\"true\"></span> Laster…</p>";
+  afterDomUpdateNotifyEmbed();
   try {
     const response = await fetch(`${API_BASE}/api/quiz/visual-today`);
     if (!response.ok) {
       el.innerHTML =
         "<p class=\"empty-state\">Ingen lagret runde. Trykk Start.</p>";
+      afterDomUpdateNotifyEmbed();
       return false;
     }
     const data = await response.json();
     if (!isValidVisualQuizPayload(data)) {
       el.innerHTML =
         "<p class=\"empty-state\">Ugyldig runde. Start på nytt.</p>";
+      afterDomUpdateNotifyEmbed();
       return false;
     }
     state.theme = data.theme || "";
@@ -649,6 +747,7 @@ async function loadVisualQuiz() {
   } catch {
     el.innerHTML =
       "<p class=\"empty-state\">Nettverksfeil. Prøv igjen.</p>";
+    afterDomUpdateNotifyEmbed();
     return false;
   }
 }
@@ -658,11 +757,13 @@ function render() {
   if (!state.questions.length) {
     el.innerHTML =
       "<p class=\"empty-state\">Ingen runde lastet.</p>";
+    afterDomUpdateNotifyEmbed();
     return;
   }
   if (state.questions.length !== QUESTION_COUNT) {
     el.innerHTML =
       "<p class=\"empty-state\">Ugyldig runde.</p>";
+    afterDomUpdateNotifyEmbed();
     return;
   }
 
@@ -941,6 +1042,7 @@ function render() {
     el.innerHTML =
       "<p class=\"empty-state\">Trykk Start eller Last lagret.</p>";
     document.getElementById("visual-generate-status").textContent = "";
+    afterDomUpdateNotifyEmbed();
   });
 
   document.getElementById("protest-open-button")?.addEventListener("click", () => {
@@ -1009,6 +1111,7 @@ function render() {
       document
         .getElementById("visual-reload-end")
         ?.addEventListener("click", loadVisualQuiz);
+      afterDomUpdateNotifyEmbed();
       return;
     }
     state.currentIndex += 1;
@@ -1025,6 +1128,7 @@ function render() {
   });
 
   applyWrittenAnswerSubmitVoiceLock();
+  afterDomUpdateNotifyEmbed();
 }
 
 async function generateVisualQuiz() {
@@ -1033,6 +1137,7 @@ async function generateVisualQuiz() {
 
   btn.disabled = true;
   statusEl.innerHTML = '<span class="vq-spinner" aria-hidden="true"></span> Venter…';
+  afterDomUpdateNotifyEmbed();
   try {
     const res = await fetch(`${API_BASE}/api/internal/generate-visual-10-quiz`, {
       method: "POST",
@@ -1053,6 +1158,7 @@ async function generateVisualQuiz() {
       "Feilet: " + (e && e.message ? e.message : "ukjent");
   } finally {
     btn.disabled = false;
+    afterDomUpdateNotifyEmbed();
   }
 }
 function protestStatusLabel(status) {
@@ -1070,6 +1176,7 @@ function clearProtestThread() {
   const thread = document.getElementById("protest-thread");
   if (thread) {
     thread.innerHTML = "";
+    afterDomUpdateNotifyEmbed();
   }
 }
 
@@ -1083,6 +1190,7 @@ function appendProtestThread(kind, innerHtml) {
   wrap.innerHTML = innerHtml;
   thread.appendChild(wrap);
   thread.scrollTop = thread.scrollHeight;
+  afterDomUpdateNotifyEmbed();
 }
 
 function appendProtestThreadPersist(kind, innerHtml) {
@@ -1132,10 +1240,12 @@ function addProtestPendingBubble() {
     '<p class="protest-chat__typing"><span class="protest-chat__spinner" aria-hidden="true"></span> Vurderer…</p>';
   thread.appendChild(wrap);
   thread.scrollTop = thread.scrollHeight;
+  afterDomUpdateNotifyEmbed();
 }
 
 function removeProtestPendingBubble() {
   document.getElementById("protest-pending-assistant")?.remove();
+  afterDomUpdateNotifyEmbed();
 }
 
 function updateProtestPhaseUI() {
@@ -1233,6 +1343,7 @@ function setProtestModalVisible(visible) {
     modal.classList.add("protest-modal--hidden");
     modal.setAttribute("aria-hidden", "true");
   }
+  afterDomUpdateNotifyEmbed();
 }
 
 function syncProtestSessionForQuestion(question) {
@@ -1741,6 +1852,7 @@ function initProtestModal() {
   }
 }
 function initVisualQuizPage() {
+  initEmbedParentHeightBridge();
   initProtestModal();
   initVoiceInputDelegation();
 

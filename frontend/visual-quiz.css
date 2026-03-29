@@ -1,32 +1,41 @@
-/* Bilde-quiz (visual-10) — egen presentasjon, uavhengig av standard prototype */
+/* Bilde-quiz (visual-10) — Gruble.net-inspirert panel for Elementor-kolonne + egen side */
 
-@import url("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=Literata:ital,opsz,wght@0,7..72,500;0,7..72,600;0,7..72,700;1,7..72,500&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap");
 
 :root {
-  --vq-bg: #ebe6df;
-  --vq-bg-deep: #e2dcd3;
-  --vq-surface: #fffefb;
-  --vq-surface-2: #faf7f2;
-  --vq-ink: #1c1917;
-  --vq-ink-soft: #44403c;
-  --vq-muted: #78716c;
-  --vq-border: #d6d3cd;
-  --vq-accent: #0f766e;
-  --vq-accent-hover: #0d9488;
-  --vq-accent-soft: #ccfbf1;
-  --vq-success: #15803d;
-  --vq-success-bg: #ecfdf3;
-  --vq-danger: #b91c1c;
-  --vq-danger-bg: #fef2f2;
-  --vq-finale: #c2410c;
-  --vq-finale-bg: #fff7ed;
-  --vq-finale-border: #fed7aa;
-  --vq-shadow: 0 4px 24px rgba(28, 25, 23, 0.08);
-  --vq-shadow-lg: 0 12px 40px rgba(28, 25, 23, 0.1);
-  --vq-radius: 16px;
-  --vq-radius-sm: 10px;
-  --font-ui: "DM Sans", system-ui, sans-serif;
-  --font-display: "Literata", Georgia, serif;
+  /* Gruble-hjemmeside (rød / fersken, høy kontrast) */
+  --gruble-red: #df1f2e;
+  --gruble-red-deep: #b81826;
+  --gruble-peach: #ff8a65;
+  --gruble-peach-deep: #ff6b45;
+  --gruble-peach-soft: #ffe8df;
+  --gruble-cream: #fff8f5;
+  --gruble-cream-2: #fff0ea;
+
+  --vq-bg: #f4edea;
+  --vq-bg-deep: #ebe3df;
+  --vq-surface: var(--gruble-cream);
+  --vq-surface-2: var(--gruble-cream-2);
+  --vq-ink: #1c1012;
+  --vq-ink-soft: #4a3538;
+  --vq-muted: #7a5c62;
+  --vq-border: rgba(28, 16, 18, 0.12);
+  --vq-accent: var(--gruble-peach-deep);
+  --vq-accent-hover: var(--gruble-peach);
+  --vq-accent-soft: var(--gruble-peach-soft);
+  --vq-success: #0d7a3e;
+  --vq-success-bg: #e8f8ee;
+  --vq-danger: #b81826;
+  --vq-danger-bg: #ffebec;
+  --vq-finale: #c73d1e;
+  --vq-finale-bg: #fff0e8;
+  --vq-finale-border: #ffc9b0;
+  --vq-shadow: 0 8px 28px rgba(28, 16, 18, 0.1);
+  --vq-shadow-lg: 0 16px 48px rgba(28, 16, 18, 0.14);
+  --vq-radius: 24px;
+  --vq-radius-sm: 16px;
+  --font-ui: "Outfit", system-ui, sans-serif;
+  --font-display: "Outfit", system-ui, sans-serif;
 }
 
 *,
@@ -51,6 +60,12 @@ html {
   scroll-behavior: smooth;
 }
 
+/* Inne i iframe på foreldreside: unngå horisontal glipp; høyde styres av postMessage */
+html.vq-embed-child,
+html.vq-embed-child body {
+  overflow-x: hidden;
+}
+
 body.vq-body {
   margin: 0;
   min-height: 100vh;
@@ -60,15 +75,38 @@ body.vq-body {
   color: var(--vq-ink);
   background: var(--vq-bg);
   background-image: radial-gradient(
-    ellipse 120% 80% at 50% -20%,
-    #d4ebe4 0%,
+    ellipse 100% 60% at 50% -15%,
+    rgba(223, 31, 46, 0.08) 0%,
     transparent 55%
   );
 }
 
+/* Ytre panel: matcher gruble.nets fargeblokker; fyller Elementor-kolonne (100% bredde) */
+#gruble-visual-quiz-root.gruble-visual-quiz {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 1.15rem 1rem 1.35rem;
+  background: linear-gradient(
+    165deg,
+    var(--gruble-red) 0%,
+    var(--gruble-red-deep) 55%,
+    #9a1420 100%
+  );
+  border-radius: 28px;
+  box-shadow: var(--vq-shadow-lg);
+}
+
+@media (min-width: 640px) {
+  #gruble-visual-quiz-root.gruble-visual-quiz {
+    padding: 1.35rem 1.25rem 1.5rem;
+  }
+}
+
 /* Midlertidig strippe-modus: roligere layout, mindre støy */
 body.vq-strip-minimal .vq-shell {
-  max-width: 36rem;
+  max-width: 100%;
 }
 
 body.vq-strip-minimal .vq-brand {
@@ -183,6 +221,11 @@ body.vq-strip-minimal .vq-footer-hint {
   color: var(--vq-ink-soft);
 }
 
+#gruble-visual-quiz-root .vq-shell {
+  max-width: 100%;
+  padding: 0;
+}
+
 .vq-shell {
   max-width: 42rem;
   margin: 0 auto;
@@ -201,11 +244,16 @@ body.vq-strip-minimal .vq-footer-hint {
   margin-bottom: 1.75rem;
 }
 
+#gruble-visual-quiz-root .vq-brand__title {
+  color: #fff;
+  text-shadow: 0 2px 16px rgba(0, 0, 0, 0.2);
+}
+
 .vq-brand__title {
   font-family: var(--font-display);
-  font-weight: 700;
+  font-weight: 800;
   font-size: clamp(1.65rem, 4vw, 2.15rem);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
   margin: 0 0 0.35rem;
   color: var(--vq-ink);
 }
@@ -222,7 +270,7 @@ body.vq-strip-minimal .vq-footer-hint {
 .vq-setup-card {
   background: var(--vq-surface);
   border-radius: var(--vq-radius);
-  border: 1px solid var(--vq-border);
+  border: none;
   box-shadow: var(--vq-shadow);
   padding: 1.25rem 1.25rem 1.5rem;
   margin-bottom: 1.5rem;
@@ -299,19 +347,23 @@ body.vq-strip-minimal .vq-footer-hint {
   padding: 0.95rem 1.25rem;
   font-family: var(--font-ui);
   font-size: 1rem;
-  font-weight: 600;
+  font-weight: 700;
   color: #fff;
-  background: linear-gradient(165deg, var(--vq-accent-hover), var(--vq-accent));
+  background: linear-gradient(
+    165deg,
+    var(--gruble-peach) 0%,
+    var(--gruble-peach-deep) 100%
+  );
   border: none;
   border-radius: var(--vq-radius-sm);
   cursor: pointer;
-  box-shadow: 0 2px 12px rgba(15, 118, 110, 0.35);
+  box-shadow: 0 4px 18px rgba(255, 107, 69, 0.45);
   transition: transform 0.12s, box-shadow 0.12s;
 }
 
 .vq-btn-primary:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 4px 16px rgba(15, 118, 110, 0.4);
+  box-shadow: 0 6px 22px rgba(255, 107, 69, 0.5);
 }
 
 .vq-btn-primary:disabled {
@@ -364,7 +416,7 @@ body.vq-strip-minimal .vq-footer-hint {
 .vq-play {
   background: var(--vq-surface);
   border-radius: var(--vq-radius);
-  border: 1px solid var(--vq-border);
+  border: none;
   box-shadow: var(--vq-shadow-lg);
   overflow: hidden;
 }
@@ -491,7 +543,11 @@ body.vq-strip-minimal .vq-footer-hint {
 .vq-progress-bar {
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--vq-accent), #14b8a6);
+  background: linear-gradient(
+    90deg,
+    var(--gruble-peach-deep),
+    var(--gruble-peach)
+  );
   transition: width 0.35s ease;
 }
 
@@ -527,16 +583,16 @@ body.vq-strip-minimal .vq-footer-hint {
 }
 
 .vq-step--done {
-  background: var(--vq-accent);
-  border-color: var(--vq-accent);
+  background: var(--gruble-red);
+  border-color: var(--gruble-red);
   color: #fff;
 }
 
 .vq-step--current {
-  border-color: var(--vq-accent);
-  color: var(--vq-accent);
+  border-color: var(--gruble-peach-deep);
+  color: var(--gruble-red-deep);
   transform: scale(1.08);
-  box-shadow: 0 0 0 3px var(--vq-accent-soft);
+  box-shadow: 0 0 0 3px var(--gruble-peach-soft);
 }
 
 .vq-step--finale {
@@ -747,14 +803,15 @@ body.vq-strip-minimal .vq-footer-hint {
 .vq-btn-next {
   font-family: var(--font-ui);
   font-size: 0.9375rem;
-  font-weight: 600;
+  font-weight: 700;
   padding: 0.75rem 1.35rem;
   border: none;
   border-radius: var(--vq-radius-sm);
-  background: var(--vq-ink);
+  background: linear-gradient(180deg, var(--gruble-red) 0%, var(--gruble-red-deep) 100%);
   color: #fff;
   cursor: pointer;
   transition: opacity 0.15s, transform 0.12s;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
 }
 
 .vq-btn-next:hover:not(:disabled) {
@@ -792,7 +849,7 @@ body.vq-strip-minimal .vq-footer-hint {
   width: 1rem;
   height: 1rem;
   border: 2px solid var(--vq-border);
-  border-top-color: var(--vq-accent);
+  border-top-color: var(--gruble-peach-deep);
   border-radius: 50%;
   animation: vq-spin 0.65s linear infinite;
   vertical-align: middle;
@@ -831,7 +888,7 @@ body.vq-strip-minimal .vq-footer-hint {
 }
 
 .vq-end__score strong {
-  color: var(--vq-accent);
+  color: var(--gruble-red);
   font-size: 1.35rem;
 }
 
@@ -847,4 +904,10 @@ body.vq-strip-minimal .vq-footer-hint {
   padding: 2rem 1rem;
   color: var(--vq-muted);
   font-size: 0.95rem;
+}
+
+/* Tom tilstand under rød panel (før quiz lastes) */
+#gruble-visual-quiz-root > .vq-shell > #visual-app > .empty-state {
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.15);
 }

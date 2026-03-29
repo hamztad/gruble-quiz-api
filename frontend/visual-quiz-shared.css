@@ -1,0 +1,159 @@
+/**
+ * Gruble visual-quiz: stiler delt med styles.css, scope'et til #gruble-visual-quiz-root
+ * slik at Elementor/tema ikke påvirkes, og WP-tema ikke overskriver quizen unødig.
+ * Lastes etter styles.css.
+ */
+
+/* —— Modus, alternativer, skrivesvar, resultat (inne i .vq-play) —— */
+#gruble-visual-quiz-root .mode-choice {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 18px 0;
+}
+
+@media (max-width: 520px) {
+  #gruble-visual-quiz-root .mode-choice {
+    grid-template-columns: 1fr;
+  }
+}
+
+#gruble-visual-quiz-root .options {
+  display: grid;
+  gap: 12px;
+  margin: 18px 0;
+}
+
+#gruble-visual-quiz-root button {
+  border-radius: 16px;
+  font-family: "Outfit", system-ui, sans-serif;
+  border: 2px solid rgba(28, 16, 18, 0.12);
+  transition:
+    transform 0.08s ease,
+    box-shadow 0.12s ease,
+    background 0.12s ease;
+}
+
+#gruble-visual-quiz-root button:hover:enabled {
+  background: #fff;
+}
+
+#gruble-visual-quiz-root .primary {
+  background: linear-gradient(165deg, #ff8a65 0%, #ff6b45 100%);
+  color: #fff;
+  border-color: transparent;
+  font-weight: 700;
+  box-shadow: 0 4px 16px rgba(255, 107, 69, 0.35);
+}
+
+#gruble-visual-quiz-root .primary:hover:enabled {
+  background: linear-gradient(165deg, #ff9a75 0%, #ff7b55 100%);
+}
+
+#gruble-visual-quiz-root .ghost {
+  background: rgba(255, 255, 255, 0.95);
+  color: #1c1012;
+  font-weight: 600;
+}
+
+#gruble-visual-quiz-root .write-box textarea {
+  border-radius: 16px;
+  border: 2px solid rgba(28, 16, 18, 0.12);
+  font-family: "Outfit", system-ui, sans-serif;
+  background: #fff;
+}
+
+#gruble-visual-quiz-root .write-actions {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+#gruble-visual-quiz-root .result {
+  border-radius: 16px;
+  border: 1px solid transparent;
+}
+
+#gruble-visual-quiz-root .result.correct {
+  background: #e8f8ee;
+  color: #0d4d28;
+}
+
+#gruble-visual-quiz-root .result.wrong {
+  background: #ffebec;
+  color: #8f1420;
+}
+
+#gruble-visual-quiz-root .result.hint {
+  background: #fff4e8;
+  color: #7a3a12;
+}
+
+#gruble-visual-quiz-root .feedback-divider {
+  border-top-color: rgba(28, 16, 18, 0.12);
+}
+
+#gruble-visual-quiz-root .option-removed {
+  text-decoration: line-through;
+  opacity: 0.45;
+}
+
+#gruble-visual-quiz-root .loading-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+
+#gruble-visual-quiz-root .voice-mic-btn--round {
+  border-radius: 50%;
+}
+
+#gruble-visual-quiz-root .voice-mic-btn--recording {
+  animation: gruble-voice-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes gruble-voice-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(223, 31, 46, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(223, 31, 46, 0);
+  }
+}
+
+#gruble-visual-quiz-root .revision-heading,
+#gruble-visual-quiz-root .revision-placeholder {
+  color: #4a3538;
+}
+
+/* —— Protest-modal (søsken til root, egen klasse) —— */
+.gruble-visual-quiz-protest.protest-modal .protest-modal__panel {
+  border-radius: 24px;
+  border: none;
+  box-shadow: 0 24px 60px rgba(28, 16, 18, 0.25);
+}
+
+.gruble-visual-quiz-protest.protest-modal .protest-modal__head h3 {
+  font-family: "Outfit", system-ui, sans-serif;
+  font-weight: 800;
+  color: #1c1012;
+}
+
+.gruble-visual-quiz-protest.protest-modal .primary {
+  background: linear-gradient(165deg, #ff8a65 0%, #ff6b45 100%);
+  border: none;
+  color: #fff;
+  font-weight: 700;
+  border-radius: 14px;
+}
+
+.gruble-visual-quiz-protest.protest-modal .protest-modal__select,
+.gruble-visual-quiz-protest.protest-modal .protest-modal__textarea,
+.gruble-visual-quiz-protest.protest-modal .protest-chat-composer__input {
+  border-radius: 14px;
+  border: 2px solid rgba(28, 16, 18, 0.12);
+}
