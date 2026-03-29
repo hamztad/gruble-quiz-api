@@ -585,6 +585,26 @@ function scoreImageTitleRelevance(title, theme, questionText) {
 }
 
 /**
+ * Foretrekk landskap (bredde ≥ høyde) for å redusere brede «bokser» ved object-fit: contain.
+ * Ukjente dimensjoner → nøytralt (0).
+ */
+function orientationScoreForQuizImage(width, height) {
+  const w = Number(width);
+  const h = Number(height);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+    return 0;
+  }
+  const ratio = w / h;
+  if (ratio >= 1.05) {
+    return 4 + Math.min(3, Math.floor((ratio - 1) * 4));
+  }
+  if (ratio <= 0.95) {
+    return -5 - Math.min(4, Math.floor((1 / ratio - 1) * 3));
+  }
+  return 1;
+}
+
+/**
  * Velg beste kandidat på tvers av kilder: tittel-relevans + lett kildebonus.
  * @param {QuizImageCandidate[]} candidates
  * @param {{ theme?: string, questionText?: string, minScore?: number }} context
@@ -620,11 +640,13 @@ function pickBestImageCandidateWithScore(candidates, context = {}) {
       c.source,
       theme
     );
+    const orient = orientationScoreForQuizImage(c.width, c.height);
     ranked.push({
       c,
       base,
       bonus,
-      total: base + bonus,
+      orient,
+      total: base + bonus + orient,
       reasons,
     });
   }
@@ -638,6 +660,9 @@ function pickBestImageCandidateWithScore(candidates, context = {}) {
     if (b.base !== a.base) {
       return b.base - a.base;
     }
+    if (b.orient !== a.orient) {
+      return b.orient - a.orient;
+    }
     /* Ingen kildefavoritt ved uavgjort — bruk innhold (tittel), ikke source-navn. */
     return String(a.c.title ?? "").localeCompare(String(b.c.title ?? ""), "nb", {
       sensitivity: "base",
@@ -649,7 +674,7 @@ function pickBestImageCandidateWithScore(candidates, context = {}) {
     second != null ? Number((top.total - second.total).toFixed(2)) : null;
   const winnerReasonParts = [
     `kilde=${top.c.source}`,
-    `total=${top.total} (relevans=${top.base} + kildebonus=${top.bonus})`,
+    `total=${top.total} (relevans=${top.base} + kildebonus=${top.bonus} + orient=${top.orient})`,
   ];
   if (top.reasons.length) {
     winnerReasonParts.push(`kildebonus: ${top.reasons.join(", ")}`);

@@ -111,23 +111,6 @@ body.vq-strip-minimal .empty-state {
   font-size: 0.9rem;
 }
 
-/* Diskret protest — fortsatt klikkbar, lite synlig */
-.vq-protest-launch {
-  min-width: 2rem;
-  padding: 0.35rem 0.5rem !important;
-  font-size: 1rem;
-  line-height: 1;
-  color: var(--vq-border) !important;
-  border-color: transparent !important;
-  background: transparent !important;
-  opacity: 0.45;
-}
-
-.vq-protest-launch:hover {
-  opacity: 0.85;
-  color: var(--vq-muted) !important;
-}
-
 /* Kort tilbakemelding */
 .vq-feedback-minimal {
   margin: 0 0 1.1rem;

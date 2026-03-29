@@ -889,7 +889,7 @@ function render() {
 
   const protestBtn = revisionMode
     ? ""
-    : '<button type="button" class="ghost vq-protest-launch" id="protest-open-button" aria-label="Protester" title="Protester">⋯</button>';
+    : '<button type="button" class="ghost" id="protest-open-button">Protester</button>';
 
   el.innerHTML = `
     <section class="vq-play">
