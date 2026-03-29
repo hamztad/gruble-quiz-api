@@ -122,6 +122,15 @@ const VISUAL_TEN_BATCH_SIZE = 3;
 const VISUAL_TEN_RECENT_QUIZ_COOLING_LIMIT = 12;
 const VISUAL_TEN_RECENT_AVOID_PER_THEME = 3;
 const VISUAL_TEN_IMAGE_PICK_TRIES = 10;
+const VISUAL_TEN_SCHEDULE_TIMEZONE =
+  process.env.VISUAL_TEN_SCHEDULE_TIMEZONE || "Europe/Oslo";
+const VISUAL_TEN_SCHEDULE_TIMES = (
+  process.env.VISUAL_TEN_SCHEDULE_TIMES || "22:00,22:10,22:20"
+)
+  .split(",")
+  .map((item) => String(item ?? "").trim())
+  .filter((item) => /^\d{2}:\d{2}$/.test(item))
+  .sort();
 const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   {
     theme: "historie",
@@ -2612,6 +2621,228 @@ async function generateVisualTenQuizWithOpenAI(
   throw lastErr || new Error("Could not generate visual-10 quiz");
 }
 
+function createDatabasePool() {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error("DATABASE_URL is not set");
+  }
+  return new Pool({
+    connectionString: databaseUrl,
+    ssl:
+      process.env.NODE_ENV === "production"
+        ? { rejectUnauthorized: false }
+        : undefined,
+  });
+}
+
+function getVisualTenSchedulerNowParts(date = new Date()) {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: VISUAL_TEN_SCHEDULE_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = Object.fromEntries(
+    fmt
+      .formatToParts(date)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value])
+  );
+  const dateKey = `${parts.year}-${parts.month}-${parts.day}`;
+  const timeKey = `${parts.hour}:${parts.minute}`;
+  return { dateKey, timeKey };
+}
+
+function getDueVisualTenScheduleSlots(date = new Date()) {
+  const now = getVisualTenSchedulerNowParts(date);
+  return VISUAL_TEN_SCHEDULE_TIMES.filter((slot) => slot <= now.timeKey).map((slot) => ({
+    scheduleSlotKey: `${now.dateKey}@${slot}`,
+    scheduleDateKey: now.dateKey,
+    scheduleTime: slot,
+    scheduleTimeZone: VISUAL_TEN_SCHEDULE_TIMEZONE,
+  }));
+}
+
+function hashStringToPgLockId(text) {
+  let hash = 0;
+  const s = String(text ?? "");
+  for (let i = 0; i < s.length; i += 1) {
+    hash = (hash * 31 + s.charCodeAt(i)) | 0;
+  }
+  return hash || 1;
+}
+
+async function scheduledVisualTenQuizExists(poolOrClient, scheduleSlotKey) {
+  const result = await poolOrClient.query(
+    `SELECT 1
+     FROM quizzes
+     WHERE questions::jsonb->>'variant' = $1
+       AND questions::jsonb->>'scheduleSlotKey' = $2
+     LIMIT 1`,
+    [VISUAL_TEN_QUIZ_VARIANT, scheduleSlotKey]
+  );
+  return result.rows.length > 0;
+}
+
+async function generateAndStoreVisualTenQuiz(options = null) {
+  const opts = options && typeof options === "object" ? options : {};
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY is not set");
+  }
+  const openai = new OpenAI({ apiKey });
+  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const memoryMode =
+    opts.quizSource === QUIZ_MEMORY_MODE.DAILY
+      ? QUIZ_MEMORY_MODE.DAILY
+      : QUIZ_MEMORY_MODE.CUSTOM;
+  const difficulty = "normal";
+  const scheduleMeta =
+    opts.scheduleMeta && typeof opts.scheduleMeta === "object" ? opts.scheduleMeta : null;
+
+  const pool = createDatabasePool();
+  const lockClient = scheduleMeta ? await pool.connect() : null;
+  let lockHeld = false;
+  try {
+    if (scheduleMeta?.scheduleSlotKey) {
+      const lockId = hashStringToPgLockId(scheduleMeta.scheduleSlotKey);
+      const lockResult = await lockClient.query(
+        "SELECT pg_try_advisory_lock($1) AS locked",
+        [lockId]
+      );
+      lockHeld = lockResult.rows[0]?.locked === true;
+      if (!lockHeld) {
+        return { skipped: true, reason: "locked" };
+      }
+      if (await scheduledVisualTenQuizExists(lockClient, scheduleMeta.scheduleSlotKey)) {
+        return { skipped: true, reason: "already_exists" };
+      }
+    }
+
+    const parsed = await generateVisualTenQuizWithOpenAI(
+      openai,
+      model,
+      {
+        pool,
+        mode: memoryMode,
+      },
+      difficulty
+    );
+
+    const client = lockClient || (await pool.connect());
+    try {
+      await client.query("BEGIN");
+      if (scheduleMeta?.scheduleSlotKey) {
+        if (await scheduledVisualTenQuizExists(client, scheduleMeta.scheduleSlotKey)) {
+          await client.query("ROLLBACK");
+          return { skipped: true, reason: "already_exists" };
+        }
+      }
+      await client.query(
+        "INSERT INTO quizzes (theme, questions, difficulty) VALUES ($1, $2::jsonb, $3)",
+        [
+          parsed.theme.trim(),
+          serializeQuizForStorage(parsed.sharedImage ?? null, parsed.questions, {
+            variant: VISUAL_TEN_QUIZ_VARIANT,
+            archiveLabel: buildVisualArchiveLabel(parsed.questions, new Date()),
+            ...(scheduleMeta ? scheduleMeta : {}),
+          }),
+          difficulty,
+        ]
+      );
+      await insertQuizQuestionMemoryRows(
+        client,
+        parsed.theme,
+        parsed.questions,
+        memoryMode,
+        {
+          variant: VISUAL_TEN_QUIZ_VARIANT,
+          useSourceTheme: true,
+        }
+      );
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      if (!lockClient && client) {
+        client.release();
+      }
+    }
+
+    return {
+      parsed,
+      difficulty,
+      variant: VISUAL_TEN_QUIZ_VARIANT,
+      memoryMode,
+    };
+  } finally {
+    if (lockHeld && lockClient && scheduleMeta?.scheduleSlotKey) {
+      const lockId = hashStringToPgLockId(scheduleMeta.scheduleSlotKey);
+      await lockClient
+        .query("SELECT pg_advisory_unlock($1)", [lockId])
+        .catch(() => {});
+    }
+    if (lockClient) {
+      lockClient.release();
+    }
+    await pool.end().catch(() => {});
+  }
+}
+
+let visualTenScheduleTickInFlight = false;
+
+async function runVisualTenScheduleTick() {
+  if (visualTenScheduleTickInFlight || VISUAL_TEN_SCHEDULE_TIMES.length === 0) {
+    return;
+  }
+  visualTenScheduleTickInFlight = true;
+  try {
+    const dueSlots = getDueVisualTenScheduleSlots();
+    for (const slot of dueSlots) {
+      try {
+        const result = await generateAndStoreVisualTenQuiz({
+          quizSource: QUIZ_MEMORY_MODE.DAILY,
+          scheduleMeta: slot,
+        });
+        if (result?.skipped) {
+          console.log(
+            `[visual-10 schedule] slot=${slot.scheduleSlotKey} skipped=${result.reason}`
+          );
+        } else {
+          console.log(
+            `[visual-10 schedule] slot=${slot.scheduleSlotKey} generated=true`
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[visual-10 schedule] slot=${slot.scheduleSlotKey} failed=${
+            err && typeof err.message === "string" ? err.message : String(err)
+          }`
+        );
+      }
+    }
+  } finally {
+    visualTenScheduleTickInFlight = false;
+  }
+}
+
+async function runVisualTenScheduledCronJobOnce() {
+  if (VISUAL_TEN_SCHEDULE_TIMES.length === 0) {
+    console.log("[visual-10 schedule] disabled=no_valid_times");
+    return;
+  }
+  console.log(
+    `[visual-10 schedule] timezone=${VISUAL_TEN_SCHEDULE_TIMEZONE} times=${JSON.stringify(
+      VISUAL_TEN_SCHEDULE_TIMES
+    )}`
+  );
+  await runVisualTenScheduleTick();
+}
+
 app.get("/api/quiz/today", async (_req, res) => {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -3793,104 +4024,24 @@ app.post("/api/internal/generate-test-quiz", async (req, res) => {
  * Bilde-10-variant: egen lagringsrad og JSON-variant; grunnmotor brukes via generateVisualTenQuizWithOpenAI.
  */
 app.post("/api/internal/generate-visual-10-quiz", async (req, res) => {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    res.status(500).json({ error: "OPENAI_API_KEY is not set" });
-    return;
-  }
-
-  const openai = new OpenAI({ apiKey });
-  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
-
   const quizSourceRaw =
     typeof req.body?.quizSource === "string"
       ? req.body.quizSource.trim().toLowerCase()
       : typeof req.body?.source === "string"
         ? req.body.source.trim().toLowerCase()
         : "";
-  const memoryMode =
-    quizSourceRaw === QUIZ_MEMORY_MODE.DAILY
-      ? QUIZ_MEMORY_MODE.DAILY
-      : QUIZ_MEMORY_MODE.CUSTOM;
-
-  const difficulty = "normal";
 
   try {
-    const databaseUrl = process.env.DATABASE_URL;
-    if (!databaseUrl) {
-      res.status(500).json({ error: "DATABASE_URL is not set" });
-      return;
-    }
-
-    const pool = new Pool({
-      connectionString: databaseUrl,
-      ssl:
-        process.env.NODE_ENV === "production"
-          ? { rejectUnauthorized: false }
-          : undefined,
+    const result = await generateAndStoreVisualTenQuiz({
+      quizSource:
+        quizSourceRaw === QUIZ_MEMORY_MODE.DAILY
+          ? QUIZ_MEMORY_MODE.DAILY
+          : QUIZ_MEMORY_MODE.CUSTOM,
     });
-
-    let parsed;
-    try {
-      parsed = await generateVisualTenQuizWithOpenAI(
-        openai,
-        model,
-        {
-          pool,
-          mode: memoryMode,
-        },
-        difficulty
-      );
-    } catch (genErr) {
-      await pool.end().catch(() => {});
-      throw genErr;
-    }
-
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      await client.query(
-        "INSERT INTO quizzes (theme, questions, difficulty) VALUES ($1, $2::jsonb, $3)",
-        [
-          parsed.theme.trim(),
-          serializeQuizForStorage(
-            parsed.sharedImage ?? null,
-            parsed.questions,
-            {
-              variant: VISUAL_TEN_QUIZ_VARIANT,
-              archiveLabel: buildVisualArchiveLabel(parsed.questions, new Date()),
-            }
-          ),
-          difficulty,
-        ]
-      );
-      await insertQuizQuestionMemoryRows(
-        client,
-        parsed.theme,
-        parsed.questions,
-        memoryMode,
-        {
-          variant: VISUAL_TEN_QUIZ_VARIANT,
-          useSourceTheme: true,
-        }
-      );
-      await client.query("COMMIT");
-    } catch (dbErr) {
-      await client.query("ROLLBACK").catch(() => {});
-      const dbMessage =
-        dbErr && typeof dbErr.message === "string"
-          ? dbErr.message
-          : "Failed to save quiz";
-      res.status(500).json({ error: dbMessage });
-      return;
-    } finally {
-      client.release();
-      await pool.end().catch(() => {});
-    }
-
+    const parsed = result?.parsed;
     res.status(200).json({
       ...stripFactKeyFromQuizPayload(parsed),
-      difficulty,
+      difficulty: result?.difficulty || "normal",
       variant: VISUAL_TEN_QUIZ_VARIANT,
     });
   } catch (err) {
@@ -4147,6 +4298,25 @@ app.post(
   }
 );
 
-app.listen(port, () => {
-  console.log(`Gruble API listening on port ${port}`);
-});
+async function main() {
+  if (process.argv.includes("--run-visual-10-cron")) {
+    try {
+      await runVisualTenScheduledCronJobOnce();
+      process.exit(0);
+    } catch (err) {
+      console.error(
+        `[visual-10 schedule] fatal=${
+          err && typeof err.message === "string" ? err.message : String(err)
+        }`
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
+  app.listen(port, () => {
+    console.log(`Gruble API listening on port ${port}`);
+  });
+}
+
+void main();

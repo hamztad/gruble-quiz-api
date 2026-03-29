@@ -5,7 +5,8 @@
   "description": "Minimal Node.js backend for Gruble on Render",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "cron:visual-10": "node server.js --run-visual-10-cron"
   },
   "engines": {
     "node": ">=18"
