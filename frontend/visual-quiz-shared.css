@@ -34,8 +34,18 @@
     background 0.12s ease;
 }
 
-#gruble-visual-quiz-root button:hover:enabled {
-  background: #fff;
+/* Ikke global button:hover — det overstyrte bl.a. .vq-btn-next (rød gradient → hvit). */
+#gruble-visual-quiz-root .option-button:hover:not(:disabled) {
+  background: #fff5f2;
+  border-color: rgba(255, 107, 69, 0.45);
+}
+
+#gruble-visual-quiz-root .mode-choice .ghost:hover:enabled {
+  background: rgba(255, 240, 235, 0.98);
+}
+
+#gruble-visual-quiz-root .write-actions .ghost.voice-mic-btn:hover:enabled {
+  background: rgba(255, 240, 235, 0.98);
 }
 
 #gruble-visual-quiz-root .primary {
@@ -149,6 +159,10 @@
   color: #fff;
   font-weight: 700;
   border-radius: 14px;
+}
+
+.gruble-visual-quiz-protest.protest-modal .primary:hover:enabled {
+  background: linear-gradient(165deg, #ff9a75 0%, #ff7b55 100%);
 }
 
 .gruble-visual-quiz-protest.protest-modal .protest-modal__select,

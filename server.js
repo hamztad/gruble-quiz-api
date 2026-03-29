@@ -28,6 +28,7 @@ function readPromptFile(filename) {
 }
 
 const WRITTEN_EVAL_SYSTEM = readPromptFile("evaluateWritten.txt");
+const EXPLAIN_MC_ANSWER_SYSTEM = readPromptFile("explainMcAnswer.txt");
 const GENERATE_QUIZ_SYSTEM = readPromptFile("generateQuiz.txt");
 const CHECK_QUESTION_SYSTEM = readPromptFile("checkQuestionSuitability.txt");
 const EVALUATE_PROTEST_SYSTEM = readPromptFile("evaluateProtest.txt");
@@ -415,6 +416,49 @@ async function evaluateWrittenAnswerWithOpenAI(
         ? `Du fikk ${points} poeng.`
         : "Svaret ditt treffer ikke godt nok."),
   };
+}
+
+async function explainMcAnswerWithOpenAI(
+  openai,
+  model,
+  questionText,
+  correctAnswer,
+  selectedAnswer,
+  isCorrect
+) {
+  const completion = await openai.chat.completions.create({
+    model,
+    messages: [
+      { role: "system", content: EXPLAIN_MC_ANSWER_SYSTEM },
+      {
+        role: "user",
+        content: JSON.stringify({
+          question: questionText,
+          correctAnswer,
+          selectedAnswer,
+          isCorrect,
+        }),
+      },
+    ],
+    response_format: { type: "json_object" },
+    temperature: 0.25,
+  });
+
+  const content = completion.choices[0]?.message?.content;
+  if (!content) {
+    throw new Error("Empty OpenAI response");
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new Error("OpenAI returned non-JSON");
+  }
+
+  const feedback =
+    typeof parsed.feedback === "string" ? parsed.feedback.trim() : "";
+  return feedback;
 }
 
 async function parseJsonChatCompletion(completionPromise) {
@@ -1907,7 +1951,9 @@ app.post("/api/quiz/answer", async (req, res) => {
     const answerMode = mode === "mc" ? "mc" : "written";
 
     if (answerMode === "mc") {
-      const userAnswerNorm = String(answer).trim().toLowerCase();
+      const questionText = String(question.question ?? "").trim();
+      const userAnswerDisplay = String(answer).trim();
+      const userAnswerNorm = userAnswerDisplay.toLowerCase();
       const correctAnswerNorm = String(question.answer).trim().toLowerCase();
       const correct = userAnswerNorm === correctAnswerNorm;
       const attempt = Math.min(4, Math.max(1, Number(attemptNumber) || 1));
@@ -1916,7 +1962,32 @@ app.post("/api/quiz/answer", async (req, res) => {
         const base = Math.max(0, 4 - attempt);
         points = applyQuizDifficultyToPoints(base, quizDifficulty);
       }
-      res.status(200).json({ correct, points });
+
+      let feedback = "";
+      const apiKeyMc = process.env.OPENAI_API_KEY;
+      if (apiKeyMc) {
+        try {
+          const openaiMc = new OpenAI({ apiKey: apiKeyMc });
+          const modelMc = process.env.OPENAI_MODEL || "gpt-4o-mini";
+          feedback = await explainMcAnswerWithOpenAI(
+            openaiMc,
+            modelMc,
+            questionText,
+            String(question.answer).trim(),
+            userAnswerDisplay,
+            correct
+          );
+        } catch (mcExplainErr) {
+          console.error("explainMcAnswerWithOpenAI:", mcExplainErr);
+        }
+      }
+      if (!feedback) {
+        feedback = correct
+          ? "Riktig svar."
+          : "Ikke riktig — prøv et annet alternativ.";
+      }
+
+      res.status(200).json({ correct, points, feedback });
       return;
     }
 

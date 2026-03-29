@@ -251,7 +251,7 @@ function stripAnswerPrefixFromFeedback(answer, feedback) {
 
   let s = original;
   const metaPrefix =
-    /^(du\s+svarte|du\s+skrev|ditt\s+svar|her\s+(?:er|var)\s+ditt\s+svar)\s*:\s*/i;
+    /^(du\s+svarte|du\s+skrev|du\s+valgte|ditt\s+svar|her\s+(?:er|var)\s+ditt\s+svar)\s*:\s*/i;
   const meta = s.match(metaPrefix);
   if (meta) {
     s = s.slice(meta[0].length).trim();
@@ -284,6 +284,67 @@ function stripAnswerPrefixFromFeedback(answer, feedback) {
   }
 
   return original;
+}
+
+function isGenericMcFeedbackLine(s) {
+  const t = String(s ?? "").trim();
+  return (
+    /^riktig\s+svar\.?$/i.test(t) ||
+    /^ikke\s+riktig\s*[—-]\s*prøv/i.test(t)
+  );
+}
+
+/** Felles «Vurdering»-blokk for skrift/tale og flervalg (unngå tom duplikat). */
+function buildVqEvalSectionFromFeedback(feedbackRaw, quoteForStrip) {
+  const feedback = typeof feedbackRaw === "string" ? feedbackRaw : "";
+  const quote = quoteForStrip != null ? String(quoteForStrip) : "";
+  const feedbackTrim = feedback.trim();
+  if (!feedbackTrim || isGenericMcFeedbackLine(feedbackTrim)) {
+    return "";
+  }
+  const feedbackBody = stripAnswerPrefixFromFeedback(quote, feedbackTrim);
+  const trivialFeedback =
+    !feedbackBody || /^ingen forklaring\.?$/i.test(feedbackBody);
+  const evalDistinct =
+    !trivialFeedback &&
+    normalizeAnswerText(feedbackBody) !== normalizeAnswerText(quote);
+  if (evalDistinct) {
+    return `<p class="feedback-eval-heading"><strong>Vurdering</strong></p>
+        <p class="feedback-eval-text">${escapeHtml(feedbackBody)}</p>`;
+  }
+  if (
+    feedbackTrim.length > 0 &&
+    normalizeAnswerText(feedbackTrim) !== normalizeAnswerText(quote)
+  ) {
+    return `<p class="feedback-eval-heading"><strong>Vurdering</strong></p>
+        <p class="feedback-eval-text">${escapeHtml(feedbackTrim)}</p>`;
+  }
+  return "";
+}
+
+function buildVqFeedbackWrittenStack(correct, ptsDisplay, feedbackRaw, quoteForStrip) {
+  const wClass = correct ? "vq-feedback-minimal--ok" : "vq-feedback-minimal--bad";
+  const wLine = correct
+    ? `Riktig. <span class="vq-feedback-pts">${escapeHtml(String(ptsDisplay))} poeng</span>`
+    : `Feil. <span class="vq-feedback-pts">${escapeHtml(String(ptsDisplay))} poeng</span>`;
+  const evalSection = buildVqEvalSectionFromFeedback(feedbackRaw, quoteForStrip);
+  return `
+      <div class="vq-feedback-written-stack">
+        <p class="vq-feedback-minimal ${wClass}">${wLine}</p>
+        ${evalSection}
+      </div>
+    `;
+}
+
+function buildVqMcWrongAttemptStack(feedbackRaw, selectedAnswer) {
+  const evalSection = buildVqEvalSectionFromFeedback(feedbackRaw, selectedAnswer);
+  if (evalSection) {
+    return `<div class="vq-feedback-written-stack">
+        <p class="vq-feedback-minimal vq-feedback-minimal--bad">Feil. Prøv igjen.</p>
+        ${evalSection}
+      </div>`;
+  }
+  return `<p class="vq-feedback-minimal vq-feedback-minimal--bad">Feil. Prøv igjen.</p>`;
 }
 
 function loadingInlineRow(text) {
@@ -633,6 +694,7 @@ async function submitMultipleChoice(question, answer, qs) {
         correct: true,
         points: result.points,
         selectedAnswer: answer,
+        feedback: typeof result.feedback === "string" ? result.feedback : "",
       };
       state.totalScore += Number(result.points) || 0;
     } else {
@@ -643,6 +705,7 @@ async function submitMultipleChoice(question, answer, qs) {
         correct: false,
         points: 0,
         selectedAnswer: answer,
+        feedback: typeof result.feedback === "string" ? result.feedback : "",
       };
     }
   } catch {
@@ -814,7 +877,7 @@ function render() {
     resultText = "";
     answerBlock = `
       <div class="mode-choice">
-        <button type="button" class="primary" id="mode-written">Skriv svar</button>
+        <button type="button" class="primary" id="mode-written">Skriv eller snakk</button>
         <button type="button" class="ghost" id="mode-mc">Alternativer</button>
       </div>
     `;
@@ -887,7 +950,7 @@ function render() {
             class="ghost voice-mic-btn voice-mic-btn--round"
             data-voice-target="written-answer"
             data-voice-status="written-voice-status"
-            aria-label="Start taleopptak"
+            aria-label="Skriv eller snakk (tale)"
             ${formBusy ? "disabled" : ""}
           ><span class="voice-mic-btn__inner">${VOICE_SVG_MIC}</span></button>
           <span class="voice-status" id="written-voice-status" aria-live="polite"></span>
@@ -925,13 +988,16 @@ function render() {
     const ptsRaw = qs.lastFeedback.points;
     const ptsNum = Number(ptsRaw);
     const ptsDisplay = Number.isFinite(ptsNum) ? ptsNum : 0;
-    const mcClass = qs.lastFeedback.correct
-      ? "vq-feedback-minimal--ok"
-      : "vq-feedback-minimal--bad";
-    const mcLine = qs.lastFeedback.correct
-      ? `Riktig. <span class="vq-feedback-pts">${escapeHtml(String(ptsDisplay))} poeng</span>`
-      : `Feil. <span class="vq-feedback-pts">${escapeHtml(String(ptsDisplay))} poeng</span>`;
-    resultContent = `<p class="vq-feedback-minimal ${mcClass}">${mcLine}</p>`;
+    const fb =
+      typeof qs.lastFeedback.feedback === "string" ? qs.lastFeedback.feedback : "";
+    const quoteMc =
+      qs.submittedAnswer != null ? String(qs.submittedAnswer) : "";
+    resultContent = buildVqFeedbackWrittenStack(
+      Boolean(qs.lastFeedback.correct),
+      ptsDisplay,
+      fb,
+      quoteMc
+    );
   } else if (
     !qs.answered &&
     qs.answerMode === "mc" &&
@@ -941,7 +1007,9 @@ function render() {
     !qs.lastFeedback.correct &&
     !qs.lastFeedback.networkError
   ) {
-    resultContent = `<p class="vq-feedback-minimal vq-feedback-minimal--bad">Feil. Prøv igjen.</p>`;
+    const fb =
+      typeof qs.lastFeedback.feedback === "string" ? qs.lastFeedback.feedback : "";
+    resultContent = buildVqMcWrongAttemptStack(fb, qs.lastFeedback.selectedAnswer);
   } else if (
     qs.answered &&
     qs.lastFeedback &&
@@ -955,28 +1023,13 @@ function render() {
     const ptsDisplay = Number.isFinite(ptsNum) ? ptsNum : 0;
     const quote =
       qs.submittedAnswer != null ? String(qs.submittedAnswer) : "";
-    const feedbackTrim = feedback.trim();
-    const feedbackBody = stripAnswerPrefixFromFeedback(quote, feedbackTrim);
-    const trivialFeedback =
-      !feedbackBody || /^ingen forklaring\.?$/i.test(feedbackBody);
-    const evalDistinct =
-      !trivialFeedback &&
-      normalizeAnswerText(feedbackBody) !== normalizeAnswerText(quote);
-    const evalSection = evalDistinct
-      ? `<p class="feedback-eval-heading"><strong>Vurdering</strong></p>
-        <p class="feedback-eval-text">${escapeHtml(feedbackBody)}</p>`
-      : "";
     const writtenOk = Boolean(qs.lastFeedback.correct);
-    const wClass = writtenOk ? "vq-feedback-minimal--ok" : "vq-feedback-minimal--bad";
-    const wLine = writtenOk
-      ? `Riktig. <span class="vq-feedback-pts">${escapeHtml(String(ptsDisplay))} poeng</span>`
-      : `Feil. <span class="vq-feedback-pts">${escapeHtml(String(ptsDisplay))} poeng</span>`;
-    resultContent = `
-      <div class="vq-feedback-written-stack">
-        <p class="vq-feedback-minimal ${wClass}">${wLine}</p>
-        ${evalSection}
-      </div>
-    `;
+    const tryAlternativesBlock = writtenOk
+      ? ""
+      : `<p class="vq-try-alternatives"><button type="button" class="primary" id="written-to-mc">Prøv blant alternativer</button></p>`;
+    resultContent =
+      buildVqFeedbackWrittenStack(writtenOk, ptsDisplay, feedback, quote) +
+      tryAlternativesBlock;
   } else if (
     qs.answered &&
     qs.lastFeedback &&
@@ -1084,6 +1137,17 @@ function render() {
       submitWritten(question, text, qs);
     });
   }
+
+  document.getElementById("written-to-mc")?.addEventListener("click", () => {
+    qs.answered = false;
+    qs.answerMode = "mc";
+    qs.lastFeedback = null;
+    qs.removedOptions = [];
+    qs.submittedAnswer = undefined;
+    qs.writtenComposeSnapshot = "";
+    qs.pendingWrittenDisplay = undefined;
+    render();
+  });
 
   document.getElementById("visual-next")?.addEventListener("click", () => {
     if (!qs.answered && !revisionMode) {

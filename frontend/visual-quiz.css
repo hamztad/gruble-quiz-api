@@ -221,6 +221,14 @@ body.vq-strip-minimal .vq-footer-hint {
   color: var(--vq-ink-soft);
 }
 
+.vq-try-alternatives {
+  margin: 0.85rem 0 0;
+}
+
+.vq-try-alternatives .primary {
+  width: auto;
+}
+
 #gruble-visual-quiz-root .vq-shell {
   max-width: 100%;
   padding: 0;
