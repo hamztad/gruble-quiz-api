@@ -288,13 +288,14 @@ Returner KUN gyldig JSON.
 
 ---
 
-FACT_KEY (VALGFRITT, ANBEFALT)
+FACT_KEY (OBLIGATORISK)
 
-For hvert spørsmål kan du legge til "fact_key": en intern nøkkel som beskriver kjernefaktumet (ikke synlig for spillere).
+For hvert spørsmål skal du legge til "fact_key": en intern nøkkel som beskriver kjernefaktumet (ikke synlig for spillere).
 - Format: 2–6 segmenter adskilt med |, kun små bokstaver og tall etter normalisering (bruk engelske eller norske stikkord uten mellomrom i segmentene).
 - Eksempler: "norge|hovedstad|oslo", "mars|planettype|planet", "everest|hoyde|fjell"
 - Samme faktum skal alltid få samme fact_key-stil, så systemet kan unngå gjentakelser.
-- Hvis du er usikker, utelat feltet — da er spørsmålet fortsatt gyldig.
+- To spørsmål som i bunn og grunn tester samme faktum, skal ha samme fact_key og dermed ikke begge få være med.
+- Ikke bruk nesten-like fact_key-er for å snike inn samme fakta i ny formulering.
 
 ---
 
@@ -303,6 +304,9 @@ VARIASJON
 - Varier innenfor trygt stoff — ikke variasjon på bekostning av sannhet
 - Varier formulering der det er naturlig
 - Unngå gjentakelser (også mot spørsmål du har fått listet ved påfyll)
+- Unngå også gjentakelser av samme kjernefaktum i ny drakt
+- Spre spørsmålene over ulike deler av temaet når det er mulig
+- Ikke bli hengende i én smal detalj eller ett «kontrollspørsmål» bare fordi det er lett å spørre om
 - Strever etter det antallet du er bedt om; kvalitet per spørsmål skal fortsatt være høy
 
 ---

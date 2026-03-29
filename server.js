@@ -18,6 +18,8 @@ const {
   filterQuizQuestionsAgainstMemory,
   insertQuizQuestionMemoryRows,
   normalizeFactKey,
+  normalizeQuizQuestionText,
+  normalizedQuestionsTooSimilar,
 } = require("./quizMemory");
 
 const app = express();
@@ -114,10 +116,15 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   { theme: "geografi", weight: 16, subjectMode: true },
   { theme: "naturfag", weight: 16, subjectMode: true },
   { theme: "kunst", weight: 12, subjectMode: true },
+  { theme: "musikk", weight: 11, subjectMode: false },
   { theme: "dyr", weight: 10, subjectMode: false },
+  { theme: "litteratur", weight: 10, subjectMode: false },
   { theme: "arkitektur", weight: 9, subjectMode: false },
+  { theme: "idrett", weight: 9, subjectMode: false },
   { theme: "romfart", weight: 7, subjectMode: false },
+  { theme: "teknologi", weight: 7, subjectMode: false },
   { theme: "oppfinnelser", weight: 6, subjectMode: false },
+  { theme: "mytologi", weight: 6, subjectMode: false },
   { theme: "verdensarv", weight: 6, subjectMode: false },
 ]);
 
@@ -139,11 +146,35 @@ function pickWeightedVisualTenThemePreset() {
   return VISUAL_TEN_THEME_PRESETS[VISUAL_TEN_THEME_PRESETS.length - 1];
 }
 
-/** N uavhengige vektede trekk — gir variasjon og hyppigere «populære» undertemaer i samme runde. */
+/**
+ * Trekker undertemaer uten duplikater i samme bilde-quiz.
+ * Det gir bredere variasjon i én og samme runde, men ulik miks mellom runder.
+ */
 function pickWeightedVisualTenThemePresetsMany(count) {
   const n = Math.max(0, Math.floor(Number(count)) || 0);
+  const pool = [...VISUAL_TEN_THEME_PRESETS];
   const out = [];
-  for (let i = 0; i < n; i += 1) {
+  while (out.length < n && pool.length > 0) {
+    const totalWeight = pool.reduce(
+      (sum, preset) => sum + Math.max(0, Number(preset.weight) || 0),
+      0
+    );
+    if (totalWeight <= 0) {
+      out.push(pool.shift());
+      continue;
+    }
+    let cursor = Math.random() * totalWeight;
+    let pickedIdx = pool.length - 1;
+    for (let i = 0; i < pool.length; i += 1) {
+      cursor -= Math.max(0, Number(pool[i].weight) || 0);
+      if (cursor < 0) {
+        pickedIdx = i;
+        break;
+      }
+    }
+    out.push(pool.splice(pickedIdx, 1)[0]);
+  }
+  while (out.length < n) {
     out.push(pickWeightedVisualTenThemePreset());
   }
   return out;
@@ -1175,7 +1206,7 @@ function buildQuizUserPrompt(
     const lines = topUp.existingQuestions
       .map(
         (q, i) =>
-          `${i + 1}. Spørsmål: ${JSON.stringify(String(q?.question ?? ""))} — fasit: ${JSON.stringify(String(q?.answer ?? ""))}`
+          `${i + 1}. Spørsmål: ${JSON.stringify(String(q?.question ?? ""))} — fasit: ${JSON.stringify(String(q?.answer ?? ""))} — fact_key: ${JSON.stringify(String(q?.fact_key ?? ""))}`
       )
       .join("\n");
     prompt = `Oppfølging: quizen om tema ${themeJson} mangler flere spørsmål.
@@ -1217,6 +1248,7 @@ Hvert element i "questions" skal ha:
 - question: spørsmålstekst
 - options: nøyaktig 4 strenger (ett riktig svar, tre plausibel feil)
 - answer: eksakt lik én av strengene i options
+- fact_key: obligatorisk intern nøkkel for kjernefaktumet, slik at samme underliggende faktum får samme nøkkel selv om du formulerer spørsmålet annerledes
 
 Feltet "theme" i JSON-svaret skal være eksakt: ${themeJson}`;
 
@@ -1312,6 +1344,14 @@ Feltet "theme" i JSON-svaret skal fortsatt være eksakt: ${themeJson}.`;
   }
 
   prompt += `
+
+VARIASJONSKRAV (viktig):
+- Når du lager flere spørsmål, spre dem over ulike deler av temaet i stedet for å kverne på én liten detalj
+- Ikke lag to spørsmål om samme kjernefaktum, selv om de er formulert forskjellig
+- Ikke lag «samme spørsmål i ny drakt» med annet årstall, annen vinkling eller annen ordlyd
+- Unngå overbrukte og smale kontrollspørsmål hvis de ikke er særlig relevante for temaet
+- Foretrekk bredde: ulike personer, steder, perioder, fenomener, verk, begreper eller kategorier der temaet tillater det
+- fact_key skal brukes aktivt til dette: hvis to spørsmål ville hatt samme fact_key eller nesten samme fact_key, skal bare ett av dem få være med
 
 Returner KUN JSON med denne formen (ingen markdown). "questions" skal sikte mot nøyaktig ${need} elementer:
 {"theme":...,"questions":[...]}`;
@@ -1587,7 +1627,7 @@ Generer nøyaktig 1 flervalgsoppgave på norsk i samme JSON-format som vanlige q
 
 Krav:
 - Feltet "theme" skal være eksakt: ${themeJson}
-- "questions" skal ha nøyaktig 1 element med id, question, options (fire strenger), answer
+- "questions" skal ha nøyaktig 1 element med id, question, options (fire strenger), answer, fact_key
 - Ett entydig riktig svar; samme kvalitetskrav som for øvrige spørsmål.
 
 Returner KUN JSON med "theme" og "questions".`;
@@ -2544,6 +2584,7 @@ function validateGeneratedQuiz(
   }
 
   let uniquelyLongestCorrectCount = 0;
+  const normalizedRows = [];
 
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
@@ -2620,16 +2661,12 @@ function validateGeneratedQuiz(
     if (!q.options.includes(q.answer)) {
       return `question ${i} answer must match one of options`;
     }
-    if (q.fact_key !== undefined && q.fact_key !== null) {
-      if (typeof q.fact_key !== "string") {
-        return `question ${i} fact_key must be a string when present`;
-      }
-      if (String(q.fact_key).trim()) {
-        const fkNorm = normalizeFactKey(q.fact_key);
-        if (!fkNorm) {
-          return `question ${i} fact_key invalid (2–6 segments, e.g. norge|hovedstad|oslo)`;
-        }
-      }
+    if (typeof q.fact_key !== "string" || !String(q.fact_key).trim()) {
+      return `question ${i} fact_key missing`;
+    }
+    const fkNorm = normalizeFactKey(q.fact_key);
+    if (!fkNorm) {
+      return `question ${i} fact_key invalid (2–6 segments, e.g. norge|hovedstad|oslo)`;
     }
     const optionBalanceError = getAnswerOptionBalanceValidationError(q);
     if (optionBalanceError) {
@@ -2642,9 +2679,26 @@ function validateGeneratedQuiz(
         uniquelyLongestCorrectCount += 1;
       }
     }
+    normalizedRows.push({
+      question: normalizeQuizQuestionText(q.question),
+      answer: normalizeQuizQuestionText(q.answer),
+      factKey: fkNorm,
+    });
   }
 
   const n = questions.length;
+  for (let i = 0; i < normalizedRows.length; i += 1) {
+    for (let j = i + 1; j < normalizedRows.length; j += 1) {
+      const a = normalizedRows[i];
+      const b = normalizedRows[j];
+      if (a.factKey && b.factKey && a.factKey === b.factKey) {
+        return `quiz: questions ${i + 1} and ${j + 1} reuse the same fact_key`;
+      }
+      if (normalizedQuestionsTooSimilar(a.question, b.question, QUIZ_MEMORY_MODE.DAILY)) {
+        return `quiz: questions ${i + 1} and ${j + 1} are too similar`;
+      }
+    }
+  }
   if (n >= 3) {
     const maxAllowedUniquelyLongest = Math.max(1, Math.floor(n * 0.45));
     if (uniquelyLongestCorrectCount > maxAllowedUniquelyLongest) {
