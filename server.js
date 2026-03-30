@@ -2871,6 +2871,12 @@ async function generateVisualTenQuestionBatch(
   const diffNorm = normalizeQuizDifficulty(difficulty);
   const { mode: memMode, pool: memoryPool } = getQuizMemoryRuntime(memoryOptions);
   const visualTenTestMode = isVisualTenPipelineTestModeEnabled(memoryOptions);
+  if (visualTenTestMode) {
+    console.log(
+      `[visual-10 batch] test_mode_top_up_disabled slots=${Array.isArray(slots) ? slots.length : 0}`
+    );
+    return buildVisualTenTestModeFallbackBatchQuestions(slots);
+  }
   const lookup = getEmptyThemeLookupSupport();
   let accepted = [];
   let pendingSlots = [...slots];
