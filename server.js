@@ -3421,12 +3421,6 @@ async function scheduledVisualTenQuizExists(poolOrClient, intervalSlotKey) {
 
 async function generateAndStoreVisualTenQuiz(options = null) {
   const opts = options && typeof options === "object" ? options : {};
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error("OPENAI_API_KEY is not set");
-  }
-  const openai = new OpenAI({ apiKey });
-  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
   const memoryMode =
     opts.quizSource === QUIZ_MEMORY_MODE.DAILY
       ? QUIZ_MEMORY_MODE.DAILY
@@ -3435,6 +3429,12 @@ async function generateAndStoreVisualTenQuiz(options = null) {
   const intervalMeta =
     opts.intervalMeta && typeof opts.intervalMeta === "object" ? opts.intervalMeta : null;
   const visualTenTestMode = isVisualTenPipelineTestModeEnabled(opts);
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!visualTenTestMode && !apiKey) {
+    throw new Error("OPENAI_API_KEY is not set");
+  }
+  const openai = visualTenTestMode ? null : new OpenAI({ apiKey });
+  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
   const pool = createDatabasePool();
   const lockClient = intervalMeta ? await pool.connect() : null;
@@ -5187,6 +5187,8 @@ app.post("/api/internal/generate-visual-10-quiz", async (req, res) => {
       : typeof req.body?.source === "string"
         ? req.body.source.trim().toLowerCase()
         : "";
+  const visualTenTestMode =
+    req.body?.visualTenTestMode === true || req.body?.testMode === true;
 
   try {
     const result = await generateAndStoreVisualTenQuiz({
@@ -5194,12 +5196,14 @@ app.post("/api/internal/generate-visual-10-quiz", async (req, res) => {
         quizSourceRaw === QUIZ_MEMORY_MODE.DAILY
           ? QUIZ_MEMORY_MODE.DAILY
           : QUIZ_MEMORY_MODE.CUSTOM,
+      visualTenTestMode,
     });
     const parsed = result?.parsed;
     res.status(200).json({
       ...stripFactKeyFromQuizPayload(parsed),
       difficulty: result?.difficulty || "normal",
       variant: VISUAL_TEN_QUIZ_VARIANT,
+      visualTenTestMode: result?.visualTenTestMode === true,
     });
   } catch (err) {
     const message =
