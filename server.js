@@ -810,6 +810,7 @@ For hvert spørsmål i "questions":
 - legg inn feltene id, question, options, answer, fact_key, fact_type
 - fact_key er obligatorisk og skal beskrive kjernefaktumet
 - fact_type er obligatorisk og skal være nøyaktig én av: ${QUIZ_FACT_TYPES.join(", ")} (små bokstaver, samme som i systemreglene)
+- i JSON: bruk bare disse engelske ordene bokstavelig; ikke norske etiketter (f.eks. ikke "sted", "årstall", "verk", "begrep")
 - fact_key skal starte med source_theme som første segment, og segment nummer to skal beskrive faktumfamilien, for eksempel kunst|verk|..., geografi|landform|..., romfart|oppdrag|...
 - spørsmålene må være fullt selvstendige, dokumenterbare og ha én klar fasit
 - ikke knytt spørsmålene til illustrasjonsbildet; det kommer først i spørsmål 10
@@ -2632,6 +2633,28 @@ async function generateQuizWithOpenAI(
   };
 }
 
+/** Logger rå fact_type fra modellen når batch-validering feiler på fact_type (visual-10). */
+function logVisualTenBatchInvalidFactTypes(questions, validationError) {
+  if (
+    typeof validationError !== "string" ||
+    !validationError.includes("fact_type")
+  ) {
+    return;
+  }
+  const qs = Array.isArray(questions) ? questions : [];
+  for (let i = 0; i < qs.length; i += 1) {
+    const q = qs[i];
+    if (normalizeQuizFactType(q?.fact_type)) {
+      continue;
+    }
+    const rawStr = q?.fact_type == null ? "" : String(q.fact_type);
+    const qSnippet = String(q?.question ?? "").slice(0, 160);
+    console.log(
+      `[visual-10 batch] invalid_fact_type value=${JSON.stringify(rawStr)} question=${JSON.stringify(qSnippet)}`
+    );
+  }
+}
+
 async function generateVisualTenQuestionBatch(
   openai,
   model,
@@ -2696,6 +2719,7 @@ async function generateVisualTenQuestionBatch(
     );
     if (batchValidationError) {
       lastError = batchValidationError;
+      logVisualTenBatchInvalidFactTypes(parsed?.questions, batchValidationError);
       console.log(
         `[visual-10 batch] attempt=${attempt + 1} validation=${JSON.stringify(batchValidationError)}`
       );
