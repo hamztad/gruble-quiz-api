@@ -1120,12 +1120,12 @@ function render() {
     resultContent = escapeHtml(resultText);
   }
 
+  const nextBtnHeader = `<button type="button" class="vq-btn-next" id="visual-next" ${
+    qs.answered || revisionMode ? "" : "disabled"
+  }>${isLast && qs.answered ? "Resultat" : "Neste"}</button>`;
   const protestBtnHeader = revisionMode
     ? ""
     : '<button type="button" class="vq-btn-ghost" data-protest-open="1">Protester</button>';
-  const protestBtnInline = revisionMode
-    ? ""
-    : '<div class="vq-result-actions"><button type="button" class="vq-btn-ghost" data-protest-open="1">Protester på dette spørsmålet</button></div>';
 
   el.innerHTML = `
     <section class="vq-play">
@@ -1134,6 +1134,7 @@ function render() {
           <span class="vq-pill vq-pill--score">${state.totalScore} poeng</span>
         </div>
         <div class="vq-play__header-actions">
+          ${nextBtnHeader}
           ${protestBtnHeader}
           <button type="button" class="vq-btn-ghost" id="visual-reload">Nytt</button>
         </div>
@@ -1159,12 +1160,6 @@ function render() {
         }
         ${answerBlock}
         <div id="result" class="${resultClass}">${resultContent}</div>
-        <footer class="vq-footer">
-          <button type="button" class="vq-btn-next" id="visual-next" ${
-            qs.answered || revisionMode ? "" : "disabled"
-          }>${isLast && qs.answered ? "Resultat" : "Neste"}</button>
-          ${protestBtnInline}
-        </footer>
       </div>
     </section>
   `;

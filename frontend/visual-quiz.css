@@ -543,6 +543,12 @@ body.vq-strip-minimal .vq-footer-hint {
   gap: 0.5rem;
 }
 
+.vq-play__header-actions .vq-btn-next {
+  padding: 0.5rem 0.95rem;
+  font-size: 0.875rem;
+  box-shadow: none;
+}
+
 /* Hovedquiz (styles.css): modus, alternativer, tilbakemelding inne i bilde-quiz-kortet */
 .vq-play .mode-choice {
   margin-bottom: 1rem;
@@ -558,14 +564,6 @@ body.vq-strip-minimal .vq-footer-hint {
 
 .vq-play .options {
   margin-bottom: 0.35rem;
-}
-
-.vq-result-actions {
-  margin: 0 0 1rem;
-}
-
-.vq-footer .vq-result-actions {
-  margin: 0;
 }
 
 @media (min-width: 640px) {
