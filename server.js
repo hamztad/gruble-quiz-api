@@ -3150,6 +3150,10 @@ app.get("/api/quiz/visual-today", async (_req, res) => {
       sharedImage: sharedImage || null,
       questions: questionsForClient,
       quizDbId: quiz.id,
+      createdAt:
+        quiz.created_at instanceof Date
+          ? quiz.created_at.toISOString()
+          : new Date(quiz.created_at).toISOString(),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

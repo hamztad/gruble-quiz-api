@@ -116,6 +116,7 @@ const state = {
   protestStateByQuestionId: {},
   /** DB-rad for aktiv visual-10 (svar og arkiv må matche samme rad). */
   quizDbId: null,
+  quizCreatedAt: null,
 };
 
 let protestTargetQuestion = null;
@@ -136,6 +137,21 @@ function difficultyLabel(d) {
   if (x === "easy") return "Lett";
   if (x === "hard") return "Vanskelig";
   return "Normal";
+}
+
+function formatActiveQuizMeta(createdAt) {
+  const raw = String(createdAt ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) {
+    return "";
+  }
+  return new Intl.DateTimeFormat("nb-NO", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(d);
 }
 
 function getQs(questionId) {
@@ -815,6 +831,8 @@ function applyVisualQuizPayload(data) {
   state.variant = data.variant || QUIZ_VARIANT;
   const idNum = Number(data.quizDbId);
   state.quizDbId = Number.isFinite(idNum) && idNum >= 1 ? idNum : null;
+  state.quizCreatedAt =
+    typeof data.createdAt === "string" && data.createdAt.trim() ? data.createdAt : null;
   state.sharedImage =
     data.sharedImage &&
     typeof data.sharedImage === "object" &&
@@ -1120,6 +1138,17 @@ function render() {
     resultContent = escapeHtml(resultText);
   }
 
+  const activeQuizMetaParts = [];
+  if (state.quizDbId != null) {
+    activeQuizMetaParts.push(`ID ${state.quizDbId}`);
+  }
+  const createdAtLabel = formatActiveQuizMeta(state.quizCreatedAt);
+  if (createdAtLabel) {
+    activeQuizMetaParts.push(createdAtLabel);
+  }
+  const activeQuizMetaPill = activeQuizMetaParts.length
+    ? `<span class="vq-pill">${escapeHtml(activeQuizMetaParts.join(" · "))}</span>`
+    : "";
   const nextBtnHeader = `<button type="button" class="vq-btn-next" id="visual-next" ${
     qs.answered || revisionMode ? "" : "disabled"
   }>${isLast && qs.answered ? "Resultat" : "Neste"}</button>`;
@@ -1132,6 +1161,7 @@ function render() {
       <header class="vq-play__header">
         <div class="vq-pills">
           <span class="vq-pill vq-pill--score">${state.totalScore} poeng</span>
+          ${activeQuizMetaPill}
         </div>
         <div class="vq-play__header-actions">
           ${nextBtnHeader}
@@ -1168,6 +1198,8 @@ function render() {
     state.questions = [];
     state.currentIndex = 0;
     state.protestStateByQuestionId = {};
+    state.quizDbId = null;
+    state.quizCreatedAt = null;
     protestSession = null;
     protestTargetQuestion = null;
     el.innerHTML =
