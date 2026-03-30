@@ -2843,6 +2843,32 @@ async function runVisualTenScheduledCronJobOnce() {
   await runVisualTenScheduleTick();
 }
 
+/** One-off generation for shell / manual checks; skips slot time rules and scheduleSlotKey. */
+async function runVisualTenCronManualTestOnce() {
+  console.log(
+    "[visual-10 schedule] mode=manual_test (ignores clock and VISUAL_TEN_SCHEDULE_TIMES)"
+  );
+  try {
+    const result = await generateAndStoreVisualTenQuiz({
+      quizSource: QUIZ_MEMORY_MODE.DAILY,
+    });
+    if (result?.skipped) {
+      console.log(
+        `[visual-10 schedule] manual_test skipped=${result.reason ?? "unknown"}`
+      );
+    } else {
+      console.log("[visual-10 schedule] manual_test generated=true");
+    }
+  } catch (err) {
+    console.error(
+      `[visual-10 schedule] manual_test failed=${
+        err && typeof err.message === "string" ? err.message : String(err)
+      }`
+    );
+    throw err;
+  }
+}
+
 app.get("/api/quiz/today", async (_req, res) => {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -4299,6 +4325,21 @@ app.post(
 );
 
 async function main() {
+  if (process.argv.includes("--run-visual-10-cron-test")) {
+    try {
+      await runVisualTenCronManualTestOnce();
+      process.exit(0);
+    } catch (err) {
+      console.error(
+        `[visual-10 schedule] fatal=${
+          err && typeof err.message === "string" ? err.message : String(err)
+        }`
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
   if (process.argv.includes("--run-visual-10-cron")) {
     try {
       await runVisualTenScheduledCronJobOnce();

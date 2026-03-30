@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "cron:visual-10": "node server.js --run-visual-10-cron"
+    "cron:visual-10": "node server.js --run-visual-10-cron",
+    "cron:visual-10:test": "node server.js --run-visual-10-cron-test"
   },
   "engines": {
     "node": ">=18"
