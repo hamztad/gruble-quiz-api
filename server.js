@@ -109,6 +109,108 @@ function applyQuizDifficultyToPoints(points, difficulty) {
   return Math.max(0, Math.round(n * m));
 }
 
+const QUIZ_FACT_TYPES = Object.freeze([
+  "person",
+  "year",
+  "place",
+  "work",
+  "concept",
+  "function",
+  "category",
+  "trait",
+]);
+const QUIZ_FACT_TYPE_SET = new Set(QUIZ_FACT_TYPES);
+const QUIZ_MAX_FACT_TYPE_OCCURRENCES = 2;
+const QUIZ_MAX_SINGLE_REGEN_ATTEMPTS = 3;
+
+/** @param {unknown} raw */
+function normalizeQuizFactType(raw) {
+  const value = String(raw ?? "").trim().toLowerCase();
+  return QUIZ_FACT_TYPE_SET.has(value) ? value : "";
+}
+
+function analyzeQuizFactTypeDistribution(
+  questions,
+  maxOccurrences = QUIZ_MAX_FACT_TYPE_OCCURRENCES
+) {
+  const counts = {};
+  const indexesByType = {};
+  for (const type of QUIZ_FACT_TYPES) {
+    counts[type] = 0;
+    indexesByType[type] = [];
+  }
+  if (!Array.isArray(questions)) {
+    return {
+      ok: true,
+      counts,
+      overusedTypes: [],
+      regenerationIndexes: [],
+    };
+  }
+  for (let i = 0; i < questions.length; i += 1) {
+    const factType = normalizeQuizFactType(questions[i]?.fact_type);
+    if (!factType) {
+      continue;
+    }
+    counts[factType] += 1;
+    indexesByType[factType].push(i);
+  }
+  const overusedTypes = QUIZ_FACT_TYPES.filter((type) => counts[type] > maxOccurrences);
+  const regenerationIndexes = overusedTypes.flatMap((type) =>
+    indexesByType[type].slice(maxOccurrences)
+  );
+  return {
+    ok: overusedTypes.length === 0,
+    counts,
+    overusedTypes,
+    regenerationIndexes,
+  };
+}
+
+function getQuizQuestionMainObjectKey(question) {
+  const factKey = normalizeFactKey(question?.fact_key);
+  if (!factKey) {
+    return "";
+  }
+  return factKey.split("|")[0] || "";
+}
+
+function analyzeQuizMainObjectReuse(questions) {
+  const counts = {};
+  const indexesByObject = {};
+  if (!Array.isArray(questions)) {
+    return {
+      ok: true,
+      counts,
+      duplicatedMainObjects: [],
+      regenerationIndexes: [],
+    };
+  }
+  for (let i = 0; i < questions.length; i += 1) {
+    const mainObjectKey = getQuizQuestionMainObjectKey(questions[i]);
+    if (!mainObjectKey) {
+      continue;
+    }
+    counts[mainObjectKey] = (counts[mainObjectKey] || 0) + 1;
+    if (!indexesByObject[mainObjectKey]) {
+      indexesByObject[mainObjectKey] = [];
+    }
+    indexesByObject[mainObjectKey].push(i);
+  }
+  const duplicatedMainObjects = Object.keys(counts).filter(
+    (key) => counts[key] > 1
+  );
+  const regenerationIndexes = duplicatedMainObjects.flatMap((key) =>
+    indexesByObject[key].slice(1)
+  );
+  return {
+    ok: duplicatedMainObjects.length === 0,
+    counts,
+    duplicatedMainObjects,
+    regenerationIndexes,
+  };
+}
+
 /** Nytt: maksimal lengde og ord for tema ved quizgenerering fra brukerinput. */
 const THEME_INPUT_MAX_CHARS = 50;
 const THEME_INPUT_MAX_WORDS = 3;
@@ -1974,7 +2076,7 @@ function buildQuizUserPrompt(
     const lines = topUp.existingQuestions
       .map(
         (q, i) =>
-          `${i + 1}. Spørsmål: ${JSON.stringify(String(q?.question ?? ""))} — fasit: ${JSON.stringify(String(q?.answer ?? ""))} — fact_key: ${JSON.stringify(String(q?.fact_key ?? ""))}`
+          `${i + 1}. Spørsmål: ${JSON.stringify(String(q?.question ?? ""))} — fasit: ${JSON.stringify(String(q?.answer ?? ""))} — fact_key: ${JSON.stringify(String(q?.fact_key ?? ""))} — fact_type: ${JSON.stringify(String(q?.fact_type ?? ""))}`
       )
       .join("\n");
     prompt = `Oppfølging: quizen om tema ${themeJson} mangler flere spørsmål.
@@ -2017,6 +2119,7 @@ Hvert element i "questions" skal ha:
 - options: nøyaktig 4 strenger (ett riktig svar, tre plausibel feil)
 - answer: eksakt lik én av strengene i options
 - fact_key: obligatorisk intern nøkkel for kjernefaktumet, slik at samme underliggende faktum får samme nøkkel selv om du formulerer spørsmålet annerledes
+- fact_type: obligatorisk og må være én av disse: ${QUIZ_FACT_TYPES.join(", ")}
 
 Feltet "theme" i JSON-svaret skal være eksakt: ${themeJson}`;
 
@@ -2120,11 +2223,170 @@ VARIASJONSKRAV (viktig):
 - Unngå overbrukte og smale kontrollspørsmål hvis de ikke er særlig relevante for temaet
 - Foretrekk bredde: ulike personer, steder, perioder, fenomener, verk, begreper eller kategorier der temaet tillater det
 - fact_key skal brukes aktivt til dette: hvis to spørsmål ville hatt samme fact_key eller nesten samme fact_key, skal bare ett av dem få være med
+- Bytt heller fact_type enn å lage små variasjoner av samme spørsmål
 
 Returner KUN JSON med denne formen (ingen markdown). "questions" skal sikte mot nøyaktig ${need} elementer:
 {"theme":...,"questions":[...]}`;
 
   return prompt;
+}
+
+function buildSingleQuestionRegenerationPrompt(
+  theme,
+  lookup,
+  subjectMode,
+  existingQuestions,
+  difficulty,
+  rejectedEntry
+) {
+  const priorQuestions = Array.isArray(existingQuestions) ? existingQuestions : [];
+  let prompt = buildQuizUserPrompt(
+    theme,
+    Math.max(1, priorQuestions.length + 1),
+    lookup,
+    subjectMode,
+    priorQuestions.length > 0
+      ? { needOnly: 1, existingQuestions: priorQuestions }
+      : null,
+    difficulty,
+    "standard"
+  );
+  const blockedFactType =
+    rejectedEntry?.blockedFactType ||
+    normalizeQuizFactType(rejectedEntry?.question?.fact_type);
+  const blockedMainObject =
+    rejectedEntry?.mainObjectKey || getQuizQuestionMainObjectKey(rejectedEntry?.question);
+  const blockedFactKey = normalizeFactKey(rejectedEntry?.question?.fact_key);
+  prompt += `
+
+REGENERERING AV ENKELTSPØRSMÅL:
+- Lag nøyaktig 1 nytt spørsmål
+- Behold alle vanlige kvalitetskrav
+- Hvis du er i tvil, bytt undertema eller perspektiv i stedet for å lage en nær variant`;
+  if (blockedFactType) {
+    prompt += `
+- Lag et nytt spørsmål med en annen fact_type enn: ${blockedFactType}`;
+  }
+  if (blockedMainObject) {
+    prompt += `
+- Ikke bruk samme hovedobjekt i fact_key (første segment): ${blockedMainObject}`;
+  }
+  if (blockedFactKey) {
+    prompt += `
+- Ikke gjenbruk eller lag en nær variant av fact_key: ${blockedFactKey}`;
+  }
+  return prompt;
+}
+
+async function regenerateRejectedQuizQuestions({
+  openai,
+  model,
+  theme,
+  lookup,
+  subjectMode,
+  difficulty,
+  rejectedEntries,
+  existingQuestions,
+  targetCount,
+  memoryPool,
+  memoryMode,
+}) {
+  const accepted = [];
+  const rejected = Array.isArray(rejectedEntries) ? rejectedEntries : [];
+  const maxNeeded =
+    Number.isInteger(targetCount) && targetCount > 0 ? targetCount : 0;
+
+  for (let i = 0; i < rejected.length && accepted.length < maxNeeded; i += 1) {
+    const rejectedEntry = rejected[i];
+    let lastError = null;
+
+    for (let attempt = 0; attempt < QUIZ_MAX_SINGLE_REGEN_ATTEMPTS; attempt += 1) {
+      const prompt = buildSingleQuestionRegenerationPrompt(
+        theme,
+        lookup,
+        subjectMode,
+        [...(existingQuestions || []), ...accepted],
+        difficulty,
+        rejectedEntry
+      );
+
+      let parsed;
+      try {
+        parsed = await parseJsonChatCompletion(
+          openai.chat.completions.create({
+            model,
+            messages: [
+              {
+                role: "system",
+                content: buildGenerateQuizSystemContent(difficulty),
+              },
+              { role: "user", content: prompt },
+            ],
+            response_format: { type: "json_object" },
+          })
+        );
+      } catch (err) {
+        lastError =
+          err && typeof err.message === "string"
+            ? err.message
+            : "single-question regeneration failed";
+        continue;
+      }
+
+      const rawQuestions = Array.isArray(parsed?.questions) ? parsed.questions : [];
+      if (rawQuestions.length === 0) {
+        lastError = "single-question regeneration returned no questions";
+        continue;
+      }
+
+      const candidates = rawQuestions.map((question, index) => ({
+        ...question,
+        id: index + 1,
+      }));
+      const selection = selectValidQuizQuestions(
+        candidates,
+        theme,
+        lookup,
+        subjectMode,
+        difficulty,
+        [...(existingQuestions || []), ...accepted],
+        { maxAccepted: 1 }
+      );
+      if (selection.accepted.length === 0) {
+        lastError =
+          selection.rejected[0]?.message || "single-question regeneration was rejected";
+        continue;
+      }
+
+      const normalizedCandidate = {
+        ...selection.accepted[0],
+        id: (existingQuestions?.length || 0) + accepted.length + 1,
+      };
+      const memResult = await filterQuizQuestionsAgainstMemory(
+        memoryPool,
+        [shuffleQuestionOptions(normalizedCandidate)],
+        theme,
+        memoryMode,
+        [...(existingQuestions || []), ...accepted]
+      );
+      if (memResult.questions.length === 0) {
+        lastError = "single-question regeneration was rejected by quiz memory";
+        continue;
+      }
+
+      accepted.push(memResult.questions[0]);
+      lastError = null;
+      break;
+    }
+
+    if (lastError) {
+      console.log(
+        `[quiz generate] singleRegenDropped index=${i + 1} reason=${JSON.stringify(lastError)}`
+      );
+    }
+  }
+
+  return accepted;
 }
 
 /**
@@ -2238,48 +2500,106 @@ async function generateQuizWithOpenAI(
       fallbackMode
     );
 
-    const parsed = await parseJsonChatCompletion(
-      openai.chat.completions.create({
-        model,
-        messages: [
-          {
-            role: "system",
-            content: buildGenerateQuizSystemContent(diffNorm),
-          },
-          { role: "user", content: userPrompt },
-        ],
-        response_format: { type: "json_object" },
-      })
-    );
-
-    const validationError = validateGeneratedQuiz(
-      parsed,
-      theme,
-      1,
-      need,
-      lookup,
-      subjectMode,
-      diffNorm
-    );
-    if (validationError) {
-      lastValidationError = validationError;
+    let parsed;
+    try {
+      parsed = await parseJsonChatCompletion(
+        openai.chat.completions.create({
+          model,
+          messages: [
+            {
+              role: "system",
+              content: buildGenerateQuizSystemContent(diffNorm),
+            },
+            { role: "user", content: userPrompt },
+          ],
+          response_format: { type: "json_object" },
+        })
+      );
+    } catch (err) {
+      lastValidationError =
+        err && typeof err.message === "string"
+          ? err.message
+          : "OpenAI generation failed";
       stallCount += 1;
       console.log(
-        `[quiz generate] call=${callIdx + 1} need=${need} validation=${JSON.stringify(validationError)}`
+        `[quiz generate] call=${callIdx + 1} need=${need} openaiError=${JSON.stringify(lastValidationError)}`
       );
       continue;
     }
 
-    if (typeof parsed.theme === "string" && parsed.theme.trim()) {
+    if (
+      parsed &&
+      typeof parsed.theme === "string" &&
+      parsed.theme.trim() &&
+      parsed.theme.trim().toLowerCase() === String(theme).trim().toLowerCase()
+    ) {
       resolvedTheme = parsed.theme.trim();
     }
 
-    parsed.questions = parsed.questions.map((q, idx) => ({
-      ...q,
-      id: idx + 1,
+    const rawQuestions = Array.isArray(parsed?.questions) ? parsed.questions : [];
+    if (rawQuestions.length === 0) {
+      lastValidationError = "questions missing";
+      stallCount += 1;
+      console.log(
+        `[quiz generate] call=${callIdx + 1} need=${need} validation=${JSON.stringify(lastValidationError)}`
+      );
+      continue;
+    }
+
+    const preparedCandidates = rawQuestions.map((question, index) => ({
+      ...question,
+      id: index + 1,
+    }));
+    const selection = selectValidQuizQuestions(
+      preparedCandidates,
+      theme,
+      lookup,
+      subjectMode,
+      diffNorm,
+      accumulated,
+      {
+        maxAccepted: need,
+      }
+    );
+
+    if (selection.rejected.length > 0) {
+      console.log(
+        `[quiz generate] call=${callIdx + 1} need=${need} rejected=${JSON.stringify(selection.rejected.map((entry) => entry.code))}`
+      );
+    }
+
+    let acceptedThisRound = selection.accepted.map((question, index) => ({
+      ...question,
+      id: accumulated.length + index + 1,
     }));
 
-    const shuffled = parsed.questions.map(shuffleQuestionOptions);
+    if (acceptedThisRound.length < need && selection.rejected.length > 0) {
+      const regenerated = await regenerateRejectedQuizQuestions({
+        openai,
+        model,
+        theme,
+        lookup,
+        subjectMode,
+        difficulty: diffNorm,
+        rejectedEntries: selection.rejected,
+        existingQuestions: [...accumulated, ...acceptedThisRound],
+        targetCount: need - acceptedThisRound.length,
+        memoryPool,
+        memoryMode: memMode,
+      });
+      if (regenerated.length > 0) {
+        acceptedThisRound = [...acceptedThisRound, ...regenerated].slice(0, need);
+      }
+    }
+
+    if (acceptedThisRound.length === 0) {
+      lastValidationError =
+        selection.rejected[0]?.message || "no acceptable questions in model batch";
+      stallCount += 1;
+      continue;
+    }
+
+    const shuffled = acceptedThisRound.map(shuffleQuestionOptions);
     const memResult = await filterQuizQuestionsAgainstMemory(
       memoryPool,
       shuffled,
@@ -2287,7 +2607,7 @@ async function generateQuizWithOpenAI(
       memMode,
       accumulated
     );
-    const batch = memResult.questions;
+    const batch = memResult.questions.slice(0, need);
 
     if (batch.length === 0) {
       lastValidationError =
@@ -2313,69 +2633,50 @@ async function generateQuizWithOpenAI(
       ...q,
       id: idx + 1,
     }));
+  }
 
-    if (accumulated.length === questionCount) {
-      const fullPayload = {
-        theme: resolvedTheme,
-        questions: accumulated,
-      };
-      const finalErr = validateGeneratedQuiz(
-        fullPayload,
-        theme,
-        questionCount,
-        questionCount,
-        lookup,
-        subjectMode,
-        diffNorm
+  const safeFinal = coerceQuizQuestionsToValidSet(
+    accumulated,
+    theme,
+    lookup,
+    subjectMode,
+    diffNorm
+  );
+  let finalQuestions = safeFinal.questions;
+  if (safeFinal.validationError) {
+    console.log(
+      `[quiz generate] finalCoerceValidation=${JSON.stringify(safeFinal.validationError)}`
+    );
+    lastValidationError = safeFinal.validationError;
+  }
+  if (finalQuestions.length === 0) {
+    finalQuestions = [buildFallbackQuizQuestion(theme)];
+  }
+
+  let sharedImage = null;
+  if (!skipDecorativeImages) {
+    try {
+      const decorated = await attachDecorativeQuizImages(theme, lookup, finalQuestions);
+      finalQuestions = decorated.questions;
+      sharedImage = decorated.sharedImage;
+    } catch (imgErr) {
+      console.warn(
+        "[quiz image] attach failed:",
+        imgErr && typeof imgErr.message === "string"
+          ? imgErr.message
+          : String(imgErr)
       );
-      if (finalErr) {
-        lastValidationError = finalErr;
-        stallCount += 1;
-        console.log(
-          `[quiz generate] fullQuizValidation failed=${JSON.stringify(finalErr)} — resetting accumulated`
-        );
-        accumulated = [];
-        continue;
-      }
-
-      let finalQuestions = accumulated;
-      let sharedImage = null;
-      if (!skipDecorativeImages) {
-        try {
-          const decorated = await attachDecorativeQuizImages(
-            theme,
-            lookup,
-            accumulated
-          );
-          finalQuestions = decorated.questions;
-          sharedImage = decorated.sharedImage;
-        } catch (imgErr) {
-          console.warn(
-            "[quiz image] attach failed:",
-            imgErr && typeof imgErr.message === "string"
-              ? imgErr.message
-              : String(imgErr)
-          );
-        }
-      }
-
-      console.log(
-        `[quiz timing] theme=${JSON.stringify(theme)} questions=${questionCount} skipDecorativeImages=${skipDecorativeImages ? "true" : "false"} duration_ms=${Date.now() - startedAt}`
-      );
-      return {
-        theme: resolvedTheme,
-        questions: finalQuestions,
-        sharedImage,
-      };
     }
   }
 
   console.log(
-    `[quiz timing] theme=${JSON.stringify(theme)} questions=${questionCount} failed duration_ms=${Date.now() - startedAt}`
+    `[quiz timing] theme=${JSON.stringify(theme)} questions=${questionCount} produced=${finalQuestions.length} degraded=${finalQuestions.length < questionCount || finalQuestions.some((question) => question?.fallbackQuestion === true) ? "true" : "false"} skipDecorativeImages=${skipDecorativeImages ? "true" : "false"} duration_ms=${Date.now() - startedAt} lastValidation=${JSON.stringify(lastValidationError)}`
   );
-  throw new Error(
-    `Could not produce ${questionCount} valid unique questions: ${lastValidationError || "unknown error"}`
-  );
+  return {
+    theme: resolvedTheme || String(theme).trim(),
+    questions: finalQuestions,
+    sharedImage,
+  };
 }
 
 async function generateVisualTenQuestionBatch(
@@ -4006,6 +4307,353 @@ function correctAnswerIsUniquelyLongestWords(question) {
   return aw > mw;
 }
 
+function getGeneratedQuestionValidationError(
+  question,
+  index,
+  expectedTheme,
+  lookup = null,
+  subjectMode = false,
+  difficulty = "easy",
+  validationOptions = null
+) {
+  const skipLookupSensitive =
+    validationOptions &&
+    typeof validationOptions === "object" &&
+    validationOptions.skipLookupSensitive === true;
+  const q = question;
+  if (!q || typeof q !== "object") {
+    return `question ${index} invalid`;
+  }
+  if (typeof q.id !== "number" || !Number.isInteger(q.id)) {
+    return `question ${index} id must be integer`;
+  }
+  if (typeof q.question !== "string" || !q.question.trim()) {
+    return `question ${index} question text missing`;
+  }
+  if (typeof q.text === "string" && q.text.trim()) {
+    return `question ${index} must not include hidden source text`;
+  }
+  const questionContextError = getQuestionContextValidationError(q.question);
+  if (questionContextError) {
+    return `question ${index} ${questionContextError}`;
+  }
+  const optionDependentError = getOptionDependentQuestionValidationError(q.question);
+  if (optionDependentError) {
+    return `question ${index} ${optionDependentError}`;
+  }
+  const openEndedError = getOpenEndedQuestionValidationError(q.question);
+  if (openEndedError) {
+    return `question ${index} ${openEndedError}`;
+  }
+  const grammarHeuristicError = getNorwegianGrammarHeuristicError(q.question);
+  if (grammarHeuristicError) {
+    return `question ${index} ${grammarHeuristicError}`;
+  }
+  const vagueQuestionError = getVagueQuestionValidationError(q.question);
+  if (vagueQuestionError) {
+    return `question ${index} ${vagueQuestionError}`;
+  }
+  const abstractTypeError = getAbstractTypeQuestionValidationError(q.question);
+  if (abstractTypeError) {
+    return `question ${index} ${abstractTypeError}`;
+  }
+  const tooEasyError = getTooEasyForDifficultyValidationError(q.question, difficulty);
+  if (tooEasyError) {
+    return `question ${index} ${tooEasyError}`;
+  }
+  if (!skipLookupSensitive) {
+    const aliasHallucinationError = getAlternateNameHallucinationValidationError(
+      q,
+      lookup,
+      subjectMode
+    );
+    if (aliasHallucinationError) {
+      return `question ${index} ${aliasHallucinationError}`;
+    }
+    const lookupTraceError = getLookupTraceabilityValidationError(
+      q,
+      expectedTheme,
+      lookup
+    );
+    if (lookupTraceError) {
+      return `question ${index} ${lookupTraceError}`;
+    }
+  }
+  if (!Array.isArray(q.options) || q.options.length !== 4) {
+    return `question ${index} must have exactly 4 options`;
+  }
+  if (!q.options.every((option) => typeof option === "string" && option.trim())) {
+    return `question ${index} options must be non-empty strings`;
+  }
+  if (typeof q.answer !== "string" || !q.answer.trim()) {
+    return `question ${index} answer missing`;
+  }
+  if (!q.options.includes(q.answer)) {
+    return `question ${index} answer must match one of options`;
+  }
+  if (typeof q.fact_key !== "string" || !String(q.fact_key).trim()) {
+    return `question ${index} fact_key missing`;
+  }
+  const fkNorm = normalizeFactKey(q.fact_key);
+  if (!fkNorm) {
+    return `question ${index} fact_key invalid (2–6 segments, e.g. norge|hovedstad|oslo)`;
+  }
+  const factType = normalizeQuizFactType(q.fact_type);
+  if (!factType) {
+    return `question ${index} fact_type invalid (must be one of: ${QUIZ_FACT_TYPES.join(", ")})`;
+  }
+  const optionBalanceError = getAnswerOptionBalanceValidationError(q);
+  if (optionBalanceError) {
+    return `question ${index} ${optionBalanceError}`;
+  }
+  return null;
+}
+
+function buildNormalizedQuizQuestionRow(question) {
+  return {
+    question: normalizeQuizQuestionText(question?.question),
+    answer: normalizeQuizAnswerText(question?.answer),
+    factKey: normalizeFactKey(question?.fact_key),
+    factType: normalizeQuizFactType(question?.fact_type),
+    mainObjectKey: getQuizQuestionMainObjectKey(question),
+  };
+}
+
+function getPairwiseQuizQuestionConflict(candidateRow, existingRows) {
+  for (let i = 0; i < existingRows.length; i += 1) {
+    const existing = existingRows[i];
+    if (
+      candidateRow.factKey &&
+      existing.factKey &&
+      normalizedFactKeysTooSimilar(candidateRow.factKey, existing.factKey)
+    ) {
+      return {
+        code: "fact_key_conflict",
+        message: `quiz: reuses the same fact_key as question ${existing.questionNumber}`,
+      };
+    }
+    const questionsTooClose = normalizedQuestionsTooSimilar(
+      candidateRow.question,
+      existing.question,
+      QUIZ_MEMORY_MODE.DAILY
+    );
+    const answersTooClose = normalizedAnswersTooSimilar(
+      candidateRow.answer,
+      existing.answer,
+      QUIZ_MEMORY_MODE.DAILY
+    );
+    const factKeysTooClose =
+      candidateRow.factKey &&
+      existing.factKey &&
+      normalizedFactKeysTooSimilar(candidateRow.factKey, existing.factKey);
+    if (questionsTooClose && (answersTooClose || factKeysTooClose)) {
+      return {
+        code: "question_similarity",
+        message: `quiz: is too similar to question ${existing.questionNumber}`,
+      };
+    }
+  }
+  return null;
+}
+
+function selectValidQuizQuestions(
+  candidateQuestions,
+  expectedTheme,
+  lookup = null,
+  subjectMode = false,
+  difficulty = "easy",
+  existingQuestions = [],
+  selectionOptions = null
+) {
+  const maxAccepted =
+    selectionOptions &&
+    typeof selectionOptions === "object" &&
+    Number.isInteger(selectionOptions.maxAccepted) &&
+    selectionOptions.maxAccepted > 0
+      ? selectionOptions.maxAccepted
+      : Number.POSITIVE_INFINITY;
+  const skipLookupSensitive =
+    selectionOptions &&
+    typeof selectionOptions === "object" &&
+    selectionOptions.skipLookupSensitive === true;
+
+  const accepted = [];
+  const rejected = [];
+  const seededQuestions = Array.isArray(existingQuestions) ? existingQuestions : [];
+  const factTypeCounts = {};
+  const mainObjectCounts = {};
+  const normalizedRows = [];
+
+  for (const type of QUIZ_FACT_TYPES) {
+    factTypeCounts[type] = 0;
+  }
+
+  for (let i = 0; i < seededQuestions.length; i += 1) {
+    const row = buildNormalizedQuizQuestionRow(seededQuestions[i]);
+    if (row.factType) {
+      factTypeCounts[row.factType] = (factTypeCounts[row.factType] || 0) + 1;
+    }
+    if (row.mainObjectKey) {
+      mainObjectCounts[row.mainObjectKey] = (mainObjectCounts[row.mainObjectKey] || 0) + 1;
+    }
+    normalizedRows.push({
+      ...row,
+      questionNumber: i + 1,
+    });
+  }
+
+  const candidates = Array.isArray(candidateQuestions) ? candidateQuestions : [];
+  for (let i = 0; i < candidates.length; i += 1) {
+    if (accepted.length >= maxAccepted) {
+      break;
+    }
+    const originalQuestion = candidates[i];
+    const validationError = getGeneratedQuestionValidationError(
+      originalQuestion,
+      i,
+      expectedTheme,
+      lookup,
+      subjectMode,
+      difficulty,
+      { skipLookupSensitive }
+    );
+    if (validationError) {
+      rejected.push({
+        question: originalQuestion,
+        index: i,
+        code: "invalid_question",
+        message: validationError,
+      });
+      continue;
+    }
+
+    const normalizedQuestion = {
+      ...originalQuestion,
+      fact_key: normalizeFactKey(originalQuestion.fact_key),
+      fact_type: normalizeQuizFactType(originalQuestion.fact_type),
+    };
+    const row = buildNormalizedQuizQuestionRow(normalizedQuestion);
+
+    if ((factTypeCounts[row.factType] || 0) >= QUIZ_MAX_FACT_TYPE_OCCURRENCES) {
+      rejected.push({
+        question: normalizedQuestion,
+        index: i,
+        code: "fact_type_overused",
+        message: `quiz: fact_type "${row.factType}" occurs more than ${QUIZ_MAX_FACT_TYPE_OCCURRENCES} times`,
+        blockedFactType: row.factType,
+      });
+      continue;
+    }
+
+    if (row.mainObjectKey && (mainObjectCounts[row.mainObjectKey] || 0) >= 1) {
+      rejected.push({
+        question: normalizedQuestion,
+        index: i,
+        code: "main_object_reused",
+        message: `quiz: reuses the same main object "${row.mainObjectKey}"`,
+        mainObjectKey: row.mainObjectKey,
+      });
+      continue;
+    }
+
+    const pairConflict = getPairwiseQuizQuestionConflict(row, normalizedRows);
+    if (pairConflict) {
+      rejected.push({
+        question: normalizedQuestion,
+        index: i,
+        code: pairConflict.code,
+        message: `question ${i} ${pairConflict.message}`,
+      });
+      continue;
+    }
+
+    accepted.push(normalizedQuestion);
+    factTypeCounts[row.factType] = (factTypeCounts[row.factType] || 0) + 1;
+    if (row.mainObjectKey) {
+      mainObjectCounts[row.mainObjectKey] = (mainObjectCounts[row.mainObjectKey] || 0) + 1;
+    }
+    normalizedRows.push({
+      ...row,
+      questionNumber: seededQuestions.length + accepted.length,
+    });
+  }
+
+  const combinedQuestions = [...seededQuestions, ...accepted];
+  return {
+    accepted,
+    rejected,
+    factTypeReport: analyzeQuizFactTypeDistribution(combinedQuestions),
+    mainObjectReport: analyzeQuizMainObjectReuse(combinedQuestions),
+  };
+}
+
+function coerceQuizQuestionsToValidSet(
+  questions,
+  expectedTheme,
+  lookup = null,
+  subjectMode = false,
+  difficulty = "easy",
+  validationOptions = null
+) {
+  let working = Array.isArray(questions)
+    ? questions.map((question, index) => ({ ...question, id: index + 1 }))
+    : [];
+  let lastError = null;
+
+  while (working.length > 0) {
+    const validationError = validateGeneratedQuiz(
+      {
+        theme: expectedTheme,
+        questions: working,
+      },
+      expectedTheme,
+      1,
+      working.length,
+      lookup,
+      subjectMode,
+      difficulty,
+      validationOptions
+    );
+    if (!validationError) {
+      return { questions: working, validationError: null };
+    }
+    lastError = validationError;
+    working = working.slice(0, -1).map((question, index) => ({
+      ...question,
+      id: index + 1,
+    }));
+  }
+
+  return { questions: [], validationError: lastError || "no valid questions" };
+}
+
+function buildFallbackQuizQuestion(theme) {
+  const answer = String(theme ?? "").trim() || "Tema";
+  const distractors = ["Historie", "Geografi", "Kunst", "Naturfag", "Musikk", "Sport"];
+  const options = [answer];
+  for (let i = 0; i < distractors.length && options.length < 4; i += 1) {
+    const candidate = distractors[i];
+    if (normalizeQuizAnswerText(candidate) === normalizeQuizAnswerText(answer)) {
+      continue;
+    }
+    options.push(candidate);
+  }
+  while (options.length < 4) {
+    options.push(`Tema ${options.length}`);
+  }
+  const keyValue =
+    normalizeQuizQuestionText(answer).replace(/\s+/g, "").slice(0, 30) || "tema";
+  return {
+    id: 1,
+    question: "Hvilket tema handler denne quizen om?",
+    options: shuffleArray(options),
+    answer,
+    fact_key: `quiz|tema|${keyValue}`,
+    fact_type: "category",
+    fallbackQuestion: true,
+  };
+}
+
 function validateGeneratedQuiz(
   payload,
   expectedTheme,
@@ -4038,134 +4686,43 @@ function validateGeneratedQuiz(
     return `questions must be an array of ${minQuestions}–${maxQuestions} items`;
   }
 
+  const selection = selectValidQuizQuestions(
+    questions,
+    expectedTheme,
+    lookup,
+    subjectMode,
+    difficulty,
+    [],
+    {
+      maxAccepted: questions.length,
+      skipLookupSensitive,
+    }
+  );
+  if (selection.rejected.length > 0) {
+    return selection.rejected[0].message;
+  }
+
+  const factTypeReport = analyzeQuizFactTypeDistribution(questions);
+  if (!factTypeReport.ok) {
+    return `quiz: fact_type overused (${factTypeReport.overusedTypes.join(", ")})`;
+  }
+
+  const mainObjectReport = analyzeQuizMainObjectReuse(questions);
+  if (!mainObjectReport.ok) {
+    return `quiz: same main object reused (${mainObjectReport.duplicatedMainObjects.join(", ")})`;
+  }
+
   let uniquelyLongestCorrectCount = 0;
-  const normalizedRows = [];
-
-  for (let i = 0; i < questions.length; i++) {
-    const q = questions[i];
-    if (!q || typeof q !== "object") {
-      return `question ${i} invalid`;
-    }
-    if (typeof q.id !== "number" || !Number.isInteger(q.id)) {
-      return `question ${i} id must be integer`;
-    }
-    if (typeof q.question !== "string" || !q.question.trim()) {
-      return `question ${i} question text missing`;
-    }
-    if (typeof q.text === "string" && q.text.trim()) {
-      return `question ${i} must not include hidden source text`;
-    }
-    const questionContextError = getQuestionContextValidationError(q.question);
-    if (questionContextError) {
-      return `question ${i} ${questionContextError}`;
-    }
-    const optionDependentError = getOptionDependentQuestionValidationError(q.question);
-    if (optionDependentError) {
-      return `question ${i} ${optionDependentError}`;
-    }
-    const openEndedError = getOpenEndedQuestionValidationError(q.question);
-    if (openEndedError) {
-      return `question ${i} ${openEndedError}`;
-    }
-    const grammarHeuristicError = getNorwegianGrammarHeuristicError(q.question);
-    if (grammarHeuristicError) {
-      return `question ${i} ${grammarHeuristicError}`;
-    }
-    const vagueQuestionError = getVagueQuestionValidationError(q.question);
-    if (vagueQuestionError) {
-      return `question ${i} ${vagueQuestionError}`;
-    }
-    const abstractTypeError = getAbstractTypeQuestionValidationError(q.question);
-    if (abstractTypeError) {
-      return `question ${i} ${abstractTypeError}`;
-    }
-    const tooEasyError = getTooEasyForDifficultyValidationError(
-      q.question,
-      difficulty
-    );
-    if (tooEasyError) {
-      return `question ${i} ${tooEasyError}`;
-    }
-    if (!skipLookupSensitive) {
-      const aliasHallucinationError = getAlternateNameHallucinationValidationError(
-        q,
-        lookup,
-        subjectMode
-      );
-      if (aliasHallucinationError) {
-        return `question ${i} ${aliasHallucinationError}`;
-      }
-      const lookupTraceError = getLookupTraceabilityValidationError(
-        q,
-        expectedTheme,
-        lookup
-      );
-      if (lookupTraceError) {
-        return `question ${i} ${lookupTraceError}`;
-      }
-    }
-    if (!Array.isArray(q.options) || q.options.length !== 4) {
-      return `question ${i} must have exactly 4 options`;
-    }
-    if (!q.options.every((o) => typeof o === "string" && o.trim())) {
-      return `question ${i} options must be non-empty strings`;
-    }
-    if (typeof q.answer !== "string" || !q.answer.trim()) {
-      return `question ${i} answer missing`;
-    }
-    if (!q.options.includes(q.answer)) {
-      return `question ${i} answer must match one of options`;
-    }
-    if (typeof q.fact_key !== "string" || !String(q.fact_key).trim()) {
-      return `question ${i} fact_key missing`;
-    }
-    const fkNorm = normalizeFactKey(q.fact_key);
-    if (!fkNorm) {
-      return `question ${i} fact_key invalid (2–6 segments, e.g. norge|hovedstad|oslo)`;
-    }
-    const optionBalanceError = getAnswerOptionBalanceValidationError(q);
-    if (optionBalanceError) {
-      return `question ${i} ${optionBalanceError}`;
-    }
-
-    const answer = String(q.answer ?? "").trim();
+  for (let i = 0; i < questions.length; i += 1) {
+    const answer = String(questions[i]?.answer ?? "").trim();
     if (answer && getOptionBalanceProfile(answer).words >= 4) {
-      if (correctAnswerIsUniquelyLongestWords(q)) {
+      if (correctAnswerIsUniquelyLongestWords(questions[i])) {
         uniquelyLongestCorrectCount += 1;
       }
     }
-    normalizedRows.push({
-      question: normalizeQuizQuestionText(q.question),
-      answer: normalizeQuizAnswerText(q.answer),
-      factKey: fkNorm,
-    });
   }
 
   const n = questions.length;
-  for (let i = 0; i < normalizedRows.length; i += 1) {
-    for (let j = i + 1; j < normalizedRows.length; j += 1) {
-      const a = normalizedRows[i];
-      const b = normalizedRows[j];
-      if (a.factKey && b.factKey && normalizedFactKeysTooSimilar(a.factKey, b.factKey)) {
-        return `quiz: questions ${i + 1} and ${j + 1} reuse the same fact_key`;
-      }
-      const questionsTooClose = normalizedQuestionsTooSimilar(
-        a.question,
-        b.question,
-        QUIZ_MEMORY_MODE.DAILY
-      );
-      const answersTooClose = normalizedAnswersTooSimilar(
-        a.answer,
-        b.answer,
-        QUIZ_MEMORY_MODE.DAILY
-      );
-      const factKeysTooClose =
-        a.factKey && b.factKey && normalizedFactKeysTooSimilar(a.factKey, b.factKey);
-      if (questionsTooClose && (answersTooClose || factKeysTooClose)) {
-        return `quiz: questions ${i + 1} and ${j + 1} are too similar`;
-      }
-    }
-  }
   if (n >= 3) {
     const maxAllowedUniquelyLongest = Math.max(1, Math.floor(n * 0.45));
     if (uniquelyLongestCorrectCount > maxAllowedUniquelyLongest) {
