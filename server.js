@@ -1025,10 +1025,15 @@ async function setupTestTable() {
     }
 
     const result = await pool.query("SELECT * FROM test ORDER BY id");
-    const quizzesResult = await pool.query("SELECT * FROM quizzes ORDER BY id");
+    const quizzesResult = await pool.query(
+      "SELECT id, theme, created_at, questions::jsonb->>'variant' AS variant FROM quizzes ORDER BY id"
+    );
+    const latestQuiz = quizzesResult.rows[quizzesResult.rows.length - 1] || null;
     console.log("Database connected");
-    console.log("All rows in test:", result.rows);
-    console.log("All rows in quizzes:", quizzesResult.rows);
+    console.log(`Test rows: ${result.rows.length}`);
+    console.log(
+      `[db quizzes] rows=${quizzesResult.rows.length} latest_id=${latestQuiz?.id ?? "n/a"} latest_created_at=${latestQuiz?.created_at ? new Date(latestQuiz.created_at).toISOString() : "n/a"} latest_variant=${latestQuiz?.variant || "standard"}`
+    );
   } catch (err) {
     console.error("Database connection error:", err.message);
   } finally {
