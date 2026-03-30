@@ -752,7 +752,10 @@ body.vq-strip-minimal .vq-footer-hint {
 .vq-image-wrap {
   margin: 0;
   padding: 1rem 1.15rem;
-  background: linear-gradient(180deg, #fafaf9 0%, var(--vq-surface) 100%);
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
 }
 
 @media (min-width: 640px) {
@@ -763,16 +766,19 @@ body.vq-strip-minimal .vq-footer-hint {
 
 .vq-image-frame {
   margin: 0;
-  border-radius: var(--vq-radius-sm);
-  overflow: hidden;
-  border: 1px solid var(--vq-border);
-  background: #0c0a09;
-  box-shadow: var(--vq-shadow);
+  width: fit-content;
+  max-width: 100%;
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+  background: transparent;
+  box-shadow: none;
 }
 
 .vq-image-zoom-trigger {
   display: block;
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   margin: 0;
   padding: 0;
   border: none;
@@ -788,10 +794,12 @@ body.vq-strip-minimal .vq-footer-hint {
 
 .vq-image-zoom-trigger img {
   display: block;
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   max-height: min(26vh, 11rem);
   object-fit: contain;
-  object-position: center;
+  object-position: left center;
+  border-radius: var(--vq-radius-sm);
 }
 
 @media (max-width: 480px) {
@@ -869,11 +877,15 @@ body.vq-strip-minimal .vq-footer-hint {
 }
 
 .vq-image-frame figcaption {
-  padding: 0.6rem 0.85rem;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  padding: 0.45rem 0 0;
+  text-align: left;
   font-size: 0.75rem;
   line-height: 1.35;
-  color: #a8a29e;
-  background: #1c1917;
+  color: var(--vq-muted);
+  background: transparent;
 }
 
 .vq-image-missing {

@@ -1163,7 +1163,7 @@ function render() {
     <div class="vq-play__actions">
       ${nextBtnPlay}
       ${protestBtnPlay}
-      <button type="button" class="vq-btn-ghost" id="visual-reload">Nytt</button>
+      <button type="button" class="vq-btn-ghost" id="visual-reload">Avslutt</button>
     </div>
   `;
 
