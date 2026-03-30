@@ -227,6 +227,13 @@ const VISUAL_TEN_IMAGE_PICK_TRIES = 10;
 const VISUAL_TEN_SCHEDULE_TIMEZONE =
   process.env.VISUAL_TEN_SCHEDULE_TIMEZONE || "Europe/Oslo";
 const VISUAL_TEN_CRON_INTERVAL_MINUTES = 10;
+const VISUAL_TEN_TEST_MODE_FALLBACK_IMAGE = Object.freeze({
+  url: "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a9/Example.jpg/800px-Example.jpg",
+  title: "Example",
+  source: "wikimedia",
+  credit: "Wikimedia Commons",
+  pageUrl: "https://commons.wikimedia.org/wiki/File:Example.jpg",
+});
 
 function isVisualTenPipelineTestModeEnabled(options = null) {
   if (options && typeof options === "object" && options.visualTenTestMode === true) {
@@ -2828,6 +2835,34 @@ function buildVisualTenTestModeFallbackImageQuestion(sharedImage, displayTheme) 
   };
 }
 
+async function buildVisualTenHardTestModeQuiz(memoryOptions = null) {
+  const { pool: memoryPool } = getQuizMemoryRuntime(memoryOptions);
+  const recentVisualHistory = await fetchRecentVisualTenHistory(memoryPool);
+  const nineSlots = pickWeightedVisualTenThemePresetsMany(
+    9,
+    recentVisualHistory?.themeCounts || null
+  );
+  const nineQuestions = buildVisualTenTestModeFallbackBatchQuestions(nineSlots).map(
+    (question, index) => ({
+      ...question,
+      id: index + 1,
+    })
+  );
+  const sharedImage = {
+    ...VISUAL_TEN_TEST_MODE_FALLBACK_IMAGE,
+  };
+  const imageQuestion = buildVisualTenTestModeFallbackImageQuestion(
+    sharedImage,
+    VISUAL_TEN_DISPLAY_THEME
+  );
+  return {
+    theme: VISUAL_TEN_DISPLAY_THEME,
+    questions: [...nineQuestions, imageQuestion],
+    sharedImage,
+    variant: VISUAL_TEN_QUIZ_VARIANT,
+  };
+}
+
 async function generateVisualTenQuestionBatch(
   openai,
   model,
@@ -3256,6 +3291,12 @@ async function generateVisualTenQuizWithOpenAI(
   memoryOptions = null,
   difficulty = "easy"
 ) {
+  if (isVisualTenPipelineTestModeEnabled(memoryOptions)) {
+    console.log(
+      "[visual-10] hard_test_mode=true validation=false memory=false batch_flow=false"
+    );
+    return buildVisualTenHardTestModeQuiz(memoryOptions);
+  }
   const startedAt = Date.now();
   let lastErr = null;
   const maxAttempts = 3;
