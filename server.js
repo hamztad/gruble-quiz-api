@@ -124,13 +124,7 @@ const VISUAL_TEN_RECENT_AVOID_PER_THEME = 3;
 const VISUAL_TEN_IMAGE_PICK_TRIES = 10;
 const VISUAL_TEN_SCHEDULE_TIMEZONE =
   process.env.VISUAL_TEN_SCHEDULE_TIMEZONE || "Europe/Oslo";
-const VISUAL_TEN_SCHEDULE_TIMES = (
-  process.env.VISUAL_TEN_SCHEDULE_TIMES || "22:00,22:10,22:20"
-)
-  .split(",")
-  .map((item) => String(item ?? "").trim())
-  .filter((item) => /^\d{2}:\d{2}$/.test(item))
-  .sort();
+const VISUAL_TEN_CRON_INTERVAL_MINUTES = 10;
 const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   {
     theme: "historie",
@@ -2656,14 +2650,25 @@ function getVisualTenSchedulerNowParts(date = new Date()) {
   return { dateKey, timeKey };
 }
 
-function getDueVisualTenScheduleSlots(date = new Date()) {
+function getVisualTenCronIntervalMeta(date = new Date()) {
   const now = getVisualTenSchedulerNowParts(date);
-  return VISUAL_TEN_SCHEDULE_TIMES.filter((slot) => slot <= now.timeKey).map((slot) => ({
-    scheduleSlotKey: `${now.dateKey}@${slot}`,
-    scheduleDateKey: now.dateKey,
-    scheduleTime: slot,
-    scheduleTimeZone: VISUAL_TEN_SCHEDULE_TIMEZONE,
-  }));
+  const [hourPart, minutePart] = now.timeKey.split(":");
+  const hour = Number(hourPart);
+  const minute = Number(minutePart);
+  const bucketMinute =
+    Math.floor(minute / VISUAL_TEN_CRON_INTERVAL_MINUTES) *
+    VISUAL_TEN_CRON_INTERVAL_MINUTES;
+  const bucketTime = `${String(hour).padStart(2, "0")}:${String(bucketMinute).padStart(
+    2,
+    "0"
+  )}`;
+  return {
+    intervalSlotKey: `${now.dateKey}@${bucketTime}`,
+    intervalDateKey: now.dateKey,
+    intervalTime: bucketTime,
+    intervalTimeZone: VISUAL_TEN_SCHEDULE_TIMEZONE,
+    intervalMinutes: VISUAL_TEN_CRON_INTERVAL_MINUTES,
+  };
 }
 
 function hashStringToPgLockId(text) {
@@ -2675,14 +2680,14 @@ function hashStringToPgLockId(text) {
   return hash || 1;
 }
 
-async function scheduledVisualTenQuizExists(poolOrClient, scheduleSlotKey) {
+async function scheduledVisualTenQuizExists(poolOrClient, intervalSlotKey) {
   const result = await poolOrClient.query(
     `SELECT 1
      FROM quizzes
      WHERE questions::jsonb->>'variant' = $1
-       AND questions::jsonb->>'scheduleSlotKey' = $2
+       AND questions::jsonb->>'intervalSlotKey' = $2
      LIMIT 1`,
-    [VISUAL_TEN_QUIZ_VARIANT, scheduleSlotKey]
+    [VISUAL_TEN_QUIZ_VARIANT, intervalSlotKey]
   );
   return result.rows.length > 0;
 }
@@ -2700,15 +2705,15 @@ async function generateAndStoreVisualTenQuiz(options = null) {
       ? QUIZ_MEMORY_MODE.DAILY
       : QUIZ_MEMORY_MODE.CUSTOM;
   const difficulty = "normal";
-  const scheduleMeta =
-    opts.scheduleMeta && typeof opts.scheduleMeta === "object" ? opts.scheduleMeta : null;
+  const intervalMeta =
+    opts.intervalMeta && typeof opts.intervalMeta === "object" ? opts.intervalMeta : null;
 
   const pool = createDatabasePool();
-  const lockClient = scheduleMeta ? await pool.connect() : null;
+  const lockClient = intervalMeta ? await pool.connect() : null;
   let lockHeld = false;
   try {
-    if (scheduleMeta?.scheduleSlotKey) {
-      const lockId = hashStringToPgLockId(scheduleMeta.scheduleSlotKey);
+    if (intervalMeta?.intervalSlotKey) {
+      const lockId = hashStringToPgLockId(intervalMeta.intervalSlotKey);
       const lockResult = await lockClient.query(
         "SELECT pg_try_advisory_lock($1) AS locked",
         [lockId]
@@ -2717,7 +2722,7 @@ async function generateAndStoreVisualTenQuiz(options = null) {
       if (!lockHeld) {
         return { skipped: true, reason: "locked" };
       }
-      if (await scheduledVisualTenQuizExists(lockClient, scheduleMeta.scheduleSlotKey)) {
+      if (await scheduledVisualTenQuizExists(lockClient, intervalMeta.intervalSlotKey)) {
         return { skipped: true, reason: "already_exists" };
       }
     }
@@ -2735,8 +2740,8 @@ async function generateAndStoreVisualTenQuiz(options = null) {
     const client = lockClient || (await pool.connect());
     try {
       await client.query("BEGIN");
-      if (scheduleMeta?.scheduleSlotKey) {
-        if (await scheduledVisualTenQuizExists(client, scheduleMeta.scheduleSlotKey)) {
+      if (intervalMeta?.intervalSlotKey) {
+        if (await scheduledVisualTenQuizExists(client, intervalMeta.intervalSlotKey)) {
           await client.query("ROLLBACK");
           return { skipped: true, reason: "already_exists" };
         }
@@ -2748,7 +2753,7 @@ async function generateAndStoreVisualTenQuiz(options = null) {
           serializeQuizForStorage(parsed.sharedImage ?? null, parsed.questions, {
             variant: VISUAL_TEN_QUIZ_VARIANT,
             archiveLabel: buildVisualArchiveLabel(parsed.questions, new Date()),
-            ...(scheduleMeta ? scheduleMeta : {}),
+            ...(intervalMeta ? intervalMeta : {}),
           }),
           difficulty,
         ]
@@ -2780,8 +2785,8 @@ async function generateAndStoreVisualTenQuiz(options = null) {
       memoryMode,
     };
   } finally {
-    if (lockHeld && lockClient && scheduleMeta?.scheduleSlotKey) {
-      const lockId = hashStringToPgLockId(scheduleMeta.scheduleSlotKey);
+    if (lockHeld && lockClient && intervalMeta?.intervalSlotKey) {
+      const lockId = hashStringToPgLockId(intervalMeta.intervalSlotKey);
       await lockClient
         .query("SELECT pg_advisory_unlock($1)", [lockId])
         .catch(() => {});
@@ -2796,34 +2801,30 @@ async function generateAndStoreVisualTenQuiz(options = null) {
 let visualTenScheduleTickInFlight = false;
 
 async function runVisualTenScheduleTick() {
-  if (visualTenScheduleTickInFlight || VISUAL_TEN_SCHEDULE_TIMES.length === 0) {
+  if (visualTenScheduleTickInFlight) {
     return;
   }
   visualTenScheduleTickInFlight = true;
   try {
-    const dueSlots = getDueVisualTenScheduleSlots();
-    for (const slot of dueSlots) {
-      try {
-        const result = await generateAndStoreVisualTenQuiz({
-          quizSource: QUIZ_MEMORY_MODE.DAILY,
-          scheduleMeta: slot,
-        });
-        if (result?.skipped) {
-          console.log(
-            `[visual-10 schedule] slot=${slot.scheduleSlotKey} skipped=${result.reason}`
-          );
-        } else {
-          console.log(
-            `[visual-10 schedule] slot=${slot.scheduleSlotKey} generated=true`
-          );
-        }
-      } catch (err) {
-        console.error(
-          `[visual-10 schedule] slot=${slot.scheduleSlotKey} failed=${
-            err && typeof err.message === "string" ? err.message : String(err)
-          }`
+    const interval = getVisualTenCronIntervalMeta();
+    try {
+      const result = await generateAndStoreVisualTenQuiz({
+        quizSource: QUIZ_MEMORY_MODE.DAILY,
+        intervalMeta: interval,
+      });
+      if (result?.skipped) {
+        console.log(
+          `[visual-10 schedule] interval=${interval.intervalSlotKey} skipped=${result.reason}`
         );
+      } else {
+        console.log(`[visual-10 schedule] interval=${interval.intervalSlotKey} generated=true`);
       }
+    } catch (err) {
+      console.error(
+        `[visual-10 schedule] interval=${interval.intervalSlotKey} failed=${
+          err && typeof err.message === "string" ? err.message : String(err)
+        }`
+      );
     }
   } finally {
     visualTenScheduleTickInFlight = false;
@@ -2831,22 +2832,16 @@ async function runVisualTenScheduleTick() {
 }
 
 async function runVisualTenScheduledCronJobOnce() {
-  if (VISUAL_TEN_SCHEDULE_TIMES.length === 0) {
-    console.log("[visual-10 schedule] disabled=no_valid_times");
-    return;
-  }
   console.log(
-    `[visual-10 schedule] timezone=${VISUAL_TEN_SCHEDULE_TIMEZONE} times=${JSON.stringify(
-      VISUAL_TEN_SCHEDULE_TIMES
-    )}`
+    `[visual-10 schedule] timezone=${VISUAL_TEN_SCHEDULE_TIMEZONE} interval_minutes=${VISUAL_TEN_CRON_INTERVAL_MINUTES}`
   );
   await runVisualTenScheduleTick();
 }
 
-/** One-off generation for shell / manual checks; skips slot time rules and scheduleSlotKey. */
+/** One-off generation for shell / manual checks; skips cron interval deduplication. */
 async function runVisualTenCronManualTestOnce() {
   console.log(
-    "[visual-10 schedule] mode=manual_test (ignores clock and VISUAL_TEN_SCHEDULE_TIMES)"
+    "[visual-10 schedule] mode=manual_test (ignores interval deduplication)"
   );
   try {
     const result = await generateAndStoreVisualTenQuiz({
