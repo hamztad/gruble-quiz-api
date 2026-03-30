@@ -807,8 +807,9 @@ ${slotLines}
 For hvert spørsmål i "questions":
 - bruk nøyaktig ett av undertemaene over
 - legg inn feltet "source_theme" med eksakt undertema-streng
-- legg inn feltene id, question, options, answer, fact_key
+- legg inn feltene id, question, options, answer, fact_key, fact_type
 - fact_key er obligatorisk og skal beskrive kjernefaktumet
+- fact_type er obligatorisk og skal være nøyaktig én av: ${QUIZ_FACT_TYPES.join(", ")} (små bokstaver, samme som i systemreglene)
 - fact_key skal starte med source_theme som første segment, og segment nummer to skal beskrive faktumfamilien, for eksempel kunst|verk|..., geografi|landform|..., romfart|oppdrag|...
 - spørsmålene må være fullt selvstendige, dokumenterbare og ha én klar fasit
 - ikke knytt spørsmålene til illustrasjonsbildet; det kommer først i spørsmål 10
@@ -849,7 +850,7 @@ ${recentLines}
     : ""
 }
 Returner KUN gyldig JSON med formen:
-{"theme":"${VISUAL_TEN_DISPLAY_THEME}","questions":[{"id":1,"source_theme":"...","question":"...","options":["...","...","...","..."],"answer":"...","fact_key":"..."}]}`;
+{"theme":"${VISUAL_TEN_DISPLAY_THEME}","questions":[{"id":1,"source_theme":"...","question":"...","options":["...","...","...","..."],"answer":"...","fact_key":"...","fact_type":"${QUIZ_FACT_TYPES[0]}"}]}`;
 }
 
 function getVisualTenBatchValidationError(payload, slots) {
@@ -2790,7 +2791,8 @@ Generer nøyaktig 1 flervalgsoppgave på norsk i samme JSON-format som vanlige q
 
 Krav:
 - Feltet "theme" skal være eksakt: ${themeJson}
-- "questions" skal ha nøyaktig 1 element med id, question, options (fire strenger), answer, fact_key
+- "questions" skal ha nøyaktig 1 element med id, question, options (fire strenger), answer, fact_key, fact_type
+- fact_type skal være nøyaktig én av: ${QUIZ_FACT_TYPES.join(", ")} (små bokstaver)
 - Ett entydig riktig svar; samme kvalitetskrav som for øvrige spørsmål.
 
 Returner KUN JSON med "theme" og "questions".`;
