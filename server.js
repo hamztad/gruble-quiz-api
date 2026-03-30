@@ -227,6 +227,15 @@ const VISUAL_TEN_IMAGE_PICK_TRIES = 10;
 const VISUAL_TEN_SCHEDULE_TIMEZONE =
   process.env.VISUAL_TEN_SCHEDULE_TIMEZONE || "Europe/Oslo";
 const VISUAL_TEN_CRON_INTERVAL_MINUTES = 10;
+
+function isVisualTenPipelineTestModeEnabled(options = null) {
+  if (options && typeof options === "object" && options.visualTenTestMode === true) {
+    return true;
+  }
+  const raw = String(process.env.VISUAL_TEN_PIPELINE_TEST_MODE ?? "").trim();
+  return /^(1|true|yes|on)$/i.test(raw);
+}
+
 const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   {
     theme: "historie",
@@ -2672,6 +2681,100 @@ function coerceVisualTenFactTypes(payload) {
   };
 }
 
+function buildVisualTenTestModeFactKey(sourceTheme, index) {
+  const rawTheme = String(sourceTheme ?? "").trim() || "visual";
+  const seg = normalizeQuizQuestionText(rawTheme).replace(/\s+/g, "") || "visual";
+  return `${seg}|concept|q${index}`;
+}
+
+function coerceVisualTenTestModeQuestion(question, fallbackId, fallbackSourceTheme = "") {
+  const rawQuestion = String(question?.question ?? "").trim() || `Testsporsmal ${fallbackId}`;
+  const rawSourceTheme = String(fallbackSourceTheme || question?.source_theme || "").trim();
+  const rawAnswer = String(question?.answer ?? "").trim();
+  const rawOptions = Array.isArray(question?.options)
+    ? question.options.map((option) => String(option ?? "").trim()).filter(Boolean)
+    : [];
+  const safeAnswer = rawAnswer || rawOptions[0] || "Alternativ A";
+  const optionSet = [];
+  const pushOption = (value) => {
+    const text = String(value ?? "").trim();
+    if (!text || optionSet.includes(text) || optionSet.length >= 4) {
+      return;
+    }
+    optionSet.push(text);
+  };
+  pushOption(safeAnswer);
+  rawOptions.forEach(pushOption);
+  ["Alternativ B", "Alternativ C", "Alternativ D", "Alternativ E"].forEach(pushOption);
+  while (optionSet.length < 4) {
+    pushOption(`Alternativ ${optionSet.length + 1}`);
+  }
+  const normalizedFactKey = normalizeFactKey(question?.fact_key);
+  return {
+    ...question,
+    id: fallbackId,
+    question: rawQuestion,
+    options: optionSet.slice(0, 4),
+    answer: optionSet.includes(safeAnswer) ? safeAnswer : optionSet[0],
+    fact_key: normalizedFactKey || buildVisualTenTestModeFactKey(rawSourceTheme, fallbackId),
+    fact_type: normalizeQuizFactType(question?.fact_type) || "concept",
+    ...(rawSourceTheme ? { source_theme: rawSourceTheme } : {}),
+  };
+}
+
+function sanitizeVisualTenBatchPayloadForTestMode(payload, slots) {
+  const safeSlots = Array.isArray(slots) ? slots : [];
+  const rawQuestions = Array.isArray(payload?.questions) ? payload.questions : [];
+  return {
+    theme: VISUAL_TEN_DISPLAY_THEME,
+    questions: safeSlots.map((slot, index) =>
+      coerceVisualTenTestModeQuestion(
+        rawQuestions[index] || {},
+        index + 1,
+        String(slot?.theme ?? "").trim()
+      )
+    ),
+  };
+}
+
+function sanitizeVisualTenClimaxPayloadForTestMode(payload, displayTheme) {
+  const rawQuestions = Array.isArray(payload?.questions) ? payload.questions : [];
+  return {
+    theme: String(displayTheme ?? "").trim() || VISUAL_TEN_DISPLAY_THEME,
+    questions: [coerceVisualTenTestModeQuestion(rawQuestions[0] || {}, 1)],
+  };
+}
+
+function validateVisualTenTestModePayload(payload, expectedTheme, expectedCount) {
+  const theme = String(payload?.theme ?? "").trim();
+  const questions = Array.isArray(payload?.questions) ? payload.questions : [];
+  if (theme !== String(expectedTheme ?? "").trim()) {
+    return "theme mismatch";
+  }
+  if (questions.length !== expectedCount) {
+    return `questions must be an array of ${expectedCount} items`;
+  }
+  for (let i = 0; i < questions.length; i += 1) {
+    const q = questions[i];
+    if (!q || typeof q !== "object") {
+      return `question ${i} invalid`;
+    }
+    if (typeof q.question !== "string" || !q.question.trim()) {
+      return `question ${i} question text missing`;
+    }
+    if (!Array.isArray(q.options) || q.options.length !== 4) {
+      return `question ${i} must have exactly 4 options`;
+    }
+    if (!q.options.every((option) => typeof option === "string" && option.trim())) {
+      return `question ${i} options must be non-empty strings`;
+    }
+    if (typeof q.answer !== "string" || !q.options.includes(q.answer)) {
+      return `question ${i} answer must match one of options`;
+    }
+  }
+  return null;
+}
+
 async function generateVisualTenQuestionBatch(
   openai,
   model,
@@ -2682,6 +2785,7 @@ async function generateVisualTenQuestionBatch(
 ) {
   const diffNorm = normalizeQuizDifficulty(difficulty);
   const { mode: memMode, pool: memoryPool } = getQuizMemoryRuntime(memoryOptions);
+  const visualTenTestMode = isVisualTenPipelineTestModeEnabled(memoryOptions);
   const lookup = getEmptyThemeLookupSupport();
   let accepted = [];
   let pendingSlots = [...slots];
@@ -2724,17 +2828,26 @@ async function generateVisualTenQuestionBatch(
       continue;
     }
     parsed = coerceVisualTenFactTypes(parsed);
+    if (visualTenTestMode) {
+      parsed = sanitizeVisualTenBatchPayloadForTestMode(parsed, pendingSlots);
+    }
 
-    const batchValidationError = validateGeneratedQuiz(
-      parsed,
-      VISUAL_TEN_DISPLAY_THEME,
-      pendingSlots.length,
-      pendingSlots.length,
-      lookup,
-      false,
-      diffNorm,
-      { skipLookupSensitive: true }
-    );
+    const batchValidationError = visualTenTestMode
+      ? validateVisualTenTestModePayload(
+          parsed,
+          VISUAL_TEN_DISPLAY_THEME,
+          pendingSlots.length
+        )
+      : validateGeneratedQuiz(
+          parsed,
+          VISUAL_TEN_DISPLAY_THEME,
+          pendingSlots.length,
+          pendingSlots.length,
+          lookup,
+          false,
+          diffNorm,
+          { skipLookupSensitive: true }
+        );
     if (batchValidationError) {
       lastError = batchValidationError;
       logVisualTenBatchInvalidFactTypes(parsed?.questions, batchValidationError);
@@ -2744,7 +2857,9 @@ async function generateVisualTenQuestionBatch(
       continue;
     }
 
-    const sourceThemeError = getVisualTenBatchValidationError(parsed, pendingSlots);
+    const sourceThemeError = visualTenTestMode
+      ? null
+      : getVisualTenBatchValidationError(parsed, pendingSlots);
     if (sourceThemeError) {
       lastError = sourceThemeError;
       console.log(
@@ -2759,17 +2874,19 @@ async function generateVisualTenQuestionBatch(
       source_theme: String(q?.source_theme ?? "").trim(),
     }));
     const shuffled = normalizedQuestions.map(shuffleQuestionOptions);
-    const memResult = await filterQuizQuestionsAgainstMemory(
-      memoryPool,
-      shuffled,
-      VISUAL_TEN_DISPLAY_THEME,
-      memMode,
-      [...(priorAcceptedQuestions || []), ...accepted],
-      {
-        variant: VISUAL_TEN_QUIZ_VARIANT,
-        useSourceTheme: true,
-      }
-    );
+    const memResult = visualTenTestMode
+      ? { questions: shuffled, rejected: 0, rejectedSnippets: [] }
+      : await filterQuizQuestionsAgainstMemory(
+          memoryPool,
+          shuffled,
+          VISUAL_TEN_DISPLAY_THEME,
+          memMode,
+          [...(priorAcceptedQuestions || []), ...accepted],
+          {
+            variant: VISUAL_TEN_QUIZ_VARIANT,
+            useSourceTheme: true,
+          }
+        );
     if (memResult.questions.length === 0) {
       lastError = "all visual-10 batch questions rejected as duplicates";
       console.log(
@@ -2810,7 +2927,8 @@ async function generateVisualClimaxQuestion(
   model,
   displayTheme,
   sharedImage,
-  diffNorm
+  diffNorm,
+  visualTenTestMode = false
 ) {
   const themeStr = String(displayTheme ?? "").trim();
   const themeJson = JSON.stringify(themeStr);
@@ -2854,17 +2972,22 @@ Returner KUN JSON med "theme" og "questions".`;
         response_format: { type: "json_object" },
       })
     );
-    const coercedParsed = coerceVisualTenFactTypes(parsed);
-    const err = validateGeneratedQuiz(
-      coercedParsed,
-      themeStr,
-      1,
-      1,
-      climaxLookup,
-      false,
-      diffNorm,
-      { skipLookupSensitive: true }
-    );
+    let coercedParsed = coerceVisualTenFactTypes(parsed);
+    if (visualTenTestMode) {
+      coercedParsed = sanitizeVisualTenClimaxPayloadForTestMode(coercedParsed, themeStr);
+    }
+    const err = visualTenTestMode
+      ? validateVisualTenTestModePayload(coercedParsed, themeStr, 1)
+      : validateGeneratedQuiz(
+          coercedParsed,
+          themeStr,
+          1,
+          1,
+          climaxLookup,
+          false,
+          diffNorm,
+          { skipLookupSensitive: true }
+        );
     if (err) {
       console.log(
         `[visual-10 climax] attempt=${attempt + 1} validation=${JSON.stringify(err)}`
@@ -2898,7 +3021,11 @@ async function buildVisualTenQuizAttempt(
   const diffNorm = normalizeQuizDifficulty(difficulty);
   const displayTheme = VISUAL_TEN_DISPLAY_THEME;
   const { mode: memMode, pool: memoryPool } = getQuizMemoryRuntime(memoryOptions);
+  const visualTenTestMode = isVisualTenPipelineTestModeEnabled(memoryOptions);
   const recentVisualHistory = await fetchRecentVisualTenHistory(memoryPool);
+  if (visualTenTestMode) {
+    console.log("[visual-10] pipeline_test_mode=true");
+  }
   const recentThemeCounts = recentVisualHistory.themeCounts;
   console.log(
     `[visual-10] recentThemeCounts=${JSON.stringify(recentThemeCounts)}`
@@ -2968,19 +3095,22 @@ async function buildVisualTenQuizAttempt(
       model,
       displayTheme,
       shared,
-      diffNorm
+      diffNorm,
+      visualTenTestMode
     );
-    const deduped = await filterQuizQuestionsAgainstMemory(
-      memoryPool,
-      [candidate],
-      displayTheme,
-      memMode,
-      nineClean,
-      {
-        variant: VISUAL_TEN_QUIZ_VARIANT,
-        useSourceTheme: true,
-      }
-    );
+    const deduped = visualTenTestMode
+      ? { questions: [candidate], rejected: 0, rejectedSnippets: [] }
+      : await filterQuizQuestionsAgainstMemory(
+          memoryPool,
+          [candidate],
+          displayTheme,
+          memMode,
+          nineClean,
+          {
+            variant: VISUAL_TEN_QUIZ_VARIANT,
+            useSourceTheme: true,
+          }
+        );
     if (deduped.questions.length > 0) {
       q10 = deduped.questions[0];
       break;
@@ -3004,16 +3134,18 @@ async function buildVisualTenQuizAttempt(
     questions: allQuestions,
   };
   const packageLookup = getEmptyThemeLookupSupport();
-  const finalErr = validateGeneratedQuiz(
-    fullPayload,
-    displayTheme,
-    10,
-    10,
-    packageLookup,
-    false,
-    diffNorm,
-    { skipLookupSensitive: true }
-  );
+  const finalErr = visualTenTestMode
+    ? validateVisualTenTestModePayload(fullPayload, displayTheme, 10)
+    : validateGeneratedQuiz(
+        fullPayload,
+        displayTheme,
+        10,
+        10,
+        packageLookup,
+        false,
+        diffNorm,
+        { skipLookupSensitive: true }
+      );
   if (finalErr) {
     throw new Error(
       `visual-10 full quiz validation failed: ${JSON.stringify(finalErr)}`
@@ -3177,6 +3309,7 @@ async function generateAndStoreVisualTenQuiz(options = null) {
   const difficulty = "normal";
   const intervalMeta =
     opts.intervalMeta && typeof opts.intervalMeta === "object" ? opts.intervalMeta : null;
+  const visualTenTestMode = isVisualTenPipelineTestModeEnabled(opts);
 
   const pool = createDatabasePool();
   const lockClient = intervalMeta ? await pool.connect() : null;
@@ -3205,6 +3338,7 @@ async function generateAndStoreVisualTenQuiz(options = null) {
         {
           pool,
           mode: memoryMode,
+          visualTenTestMode,
         },
         difficulty
       );
@@ -3249,16 +3383,18 @@ async function generateAndStoreVisualTenQuiz(options = null) {
           difficulty,
         ]
       );
-      await insertQuizQuestionMemoryRows(
-        client,
-        parsed.theme,
-        parsed.questions,
-        memoryMode,
-        {
-          variant: VISUAL_TEN_QUIZ_VARIANT,
-          useSourceTheme: true,
-        }
-      );
+      if (!visualTenTestMode) {
+        await insertQuizQuestionMemoryRows(
+          client,
+          parsed.theme,
+          parsed.questions,
+          memoryMode,
+          {
+            variant: VISUAL_TEN_QUIZ_VARIANT,
+            useSourceTheme: true,
+          }
+        );
+      }
       await client.query("COMMIT");
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
@@ -3274,6 +3410,7 @@ async function generateAndStoreVisualTenQuiz(options = null) {
       difficulty,
       variant: VISUAL_TEN_QUIZ_VARIANT,
       memoryMode,
+      visualTenTestMode,
     };
   } finally {
     if (lockHeld && lockClient && intervalMeta?.intervalSlotKey) {
