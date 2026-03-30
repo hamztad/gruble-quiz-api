@@ -2775,6 +2775,59 @@ function validateVisualTenTestModePayload(payload, expectedTheme, expectedCount)
   return null;
 }
 
+function buildVisualTenTestModeFallbackQuestion(sourceTheme, fallbackId, distractorThemes = []) {
+  const theme = String(sourceTheme ?? "").trim() || `Tema ${fallbackId}`;
+  const optionPool = [theme, ...distractorThemes.filter(Boolean), "Historie", "Geografi", "Naturfag", "Språk"];
+  const uniqueOptions = [];
+  for (let i = 0; i < optionPool.length && uniqueOptions.length < 4; i += 1) {
+    const option = String(optionPool[i] ?? "").trim();
+    if (!option || uniqueOptions.includes(option)) {
+      continue;
+    }
+    uniqueOptions.push(option);
+  }
+  while (uniqueOptions.length < 4) {
+    uniqueOptions.push(`Alternativ ${uniqueOptions.length + 1}`);
+  }
+  return {
+    id: fallbackId,
+    source_theme: theme,
+    question: `Hvilket undertema er dette testsporsmalet knyttet til?`,
+    options: shuffleArray(uniqueOptions),
+    answer: theme,
+    fact_key: buildVisualTenTestModeFactKey(theme, fallbackId),
+    fact_type: "concept",
+  };
+}
+
+function buildVisualTenTestModeFallbackBatchQuestions(slots) {
+  const safeSlots = Array.isArray(slots) ? slots : [];
+  return safeSlots.map((slot, index) =>
+    buildVisualTenTestModeFallbackQuestion(
+      String(slot?.theme ?? "").trim(),
+      index + 1,
+      safeSlots
+        .map((item) => String(item?.theme ?? "").trim())
+        .filter((theme) => theme && theme !== String(slot?.theme ?? "").trim())
+    )
+  );
+}
+
+function buildVisualTenTestModeFallbackImageQuestion(sharedImage, displayTheme) {
+  const title = String(sharedImage?.title ?? "").trim() || "Illustrasjon";
+  const question = `Hva er tittelen på bildet som brukes i denne ${String(displayTheme ?? "").trim().toLowerCase()}?`;
+  const options = shuffleArray([title, "Historisk motiv", "Naturmotiv", "Bymotiv"]);
+  return {
+    id: 10,
+    question,
+    options,
+    answer: title,
+    fact_key: buildVisualTenTestModeFactKey("image", 10),
+    fact_type: "concept",
+    imageQuestion: true,
+  };
+}
+
 async function generateVisualTenQuestionBatch(
   openai,
   model,
@@ -2908,6 +2961,12 @@ async function generateVisualTenQuestionBatch(
   }
 
   if (accepted.length !== slots.length) {
+    if (visualTenTestMode) {
+      console.log(
+        `[visual-10 batch] test_mode_fallback slots=${slots.length} reason=${JSON.stringify(lastError)}`
+      );
+      return buildVisualTenTestModeFallbackBatchQuestions(slots);
+    }
     throw new Error(
       `visual-10 batch failed: ${lastError || "could not fill all undertema slots"}`
     );
@@ -2959,19 +3018,32 @@ Returner KUN JSON med "theme" og "questions".`;
 
   const climaxLookup = getEmptyThemeLookupSupport();
   for (let attempt = 0; attempt < 6; attempt += 1) {
-    const parsed = await parseJsonChatCompletion(
-      openai.chat.completions.create({
-        model,
-        messages: [
-          {
-            role: "system",
-            content: buildGenerateQuizSystemContent(diffNorm),
-          },
-          { role: "user", content: userPrompt },
-        ],
-        response_format: { type: "json_object" },
-      })
-    );
+    let parsed;
+    try {
+      parsed = await parseJsonChatCompletion(
+        openai.chat.completions.create({
+          model,
+          messages: [
+            {
+              role: "system",
+              content: buildGenerateQuizSystemContent(diffNorm),
+            },
+            { role: "user", content: userPrompt },
+          ],
+          response_format: { type: "json_object" },
+        })
+      );
+    } catch (err) {
+      if (!visualTenTestMode) {
+        throw err;
+      }
+      console.log(
+        `[visual-10 climax] attempt=${attempt + 1} parse_failed=${JSON.stringify(
+          err && typeof err.message === "string" ? err.message : String(err)
+        )}`
+      );
+      continue;
+    }
     let coercedParsed = coerceVisualTenFactTypes(parsed);
     if (visualTenTestMode) {
       coercedParsed = sanitizeVisualTenClimaxPayloadForTestMode(coercedParsed, themeStr);
@@ -3003,6 +3075,10 @@ Returner KUN JSON med "theme" og "questions".`;
       id: 10,
       imageQuestion: true,
     });
+  }
+  if (visualTenTestMode) {
+    console.log("[visual-10 climax] test_mode_fallback=true");
+    return buildVisualTenTestModeFallbackImageQuestion(sharedImage, themeStr);
   }
   throw new Error("Could not generate valid visual climax question");
 }
@@ -3325,7 +3401,10 @@ async function generateAndStoreVisualTenQuiz(options = null) {
       if (!lockHeld) {
         return { skipped: true, reason: "locked" };
       }
-      if (await scheduledVisualTenQuizExists(lockClient, intervalMeta.intervalSlotKey)) {
+      if (
+        !visualTenTestMode &&
+        (await scheduledVisualTenQuizExists(lockClient, intervalMeta.intervalSlotKey))
+      ) {
         return { skipped: true, reason: "already_exists" };
       }
     }
@@ -3365,7 +3444,7 @@ async function generateAndStoreVisualTenQuiz(options = null) {
     const client = lockClient || (await pool.connect());
     try {
       await client.query("BEGIN");
-      if (intervalMeta?.intervalSlotKey) {
+      if (intervalMeta?.intervalSlotKey && !visualTenTestMode) {
         if (await scheduledVisualTenQuizExists(client, intervalMeta.intervalSlotKey)) {
           await client.query("ROLLBACK");
           return { skipped: true, reason: "already_exists" };
