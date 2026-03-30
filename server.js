@@ -2836,12 +2836,9 @@ function buildVisualTenTestModeFallbackImageQuestion(sharedImage, displayTheme) 
 }
 
 async function buildVisualTenHardTestModeQuiz(memoryOptions = null) {
-  const { pool: memoryPool } = getQuizMemoryRuntime(memoryOptions);
-  const recentVisualHistory = await fetchRecentVisualTenHistory(memoryPool);
-  const nineSlots = pickWeightedVisualTenThemePresetsMany(
-    9,
-    recentVisualHistory?.themeCounts || null
-  );
+  const nineSlots = shuffleArray(VISUAL_TEN_THEME_PRESETS)
+    .slice(0, 9)
+    .map((preset) => buildVisualTenSlotFromPreset(preset));
   const nineQuestions = buildVisualTenTestModeFallbackBatchQuestions(nineSlots).map(
     (question, index) => ({
       ...question,
@@ -3452,16 +3449,23 @@ async function generateAndStoreVisualTenQuiz(options = null) {
 
     let parsed;
     try {
-      parsed = await generateVisualTenQuizWithOpenAI(
-        openai,
-        model,
-        {
-          pool,
-          mode: memoryMode,
-          visualTenTestMode,
-        },
-        difficulty
-      );
+      if (visualTenTestMode) {
+        console.log(
+          "[visual-10] hard_test_mode_store_path=true memory=false validation=false top_up=false"
+        );
+        parsed = await buildVisualTenHardTestModeQuiz();
+      } else {
+        parsed = await generateVisualTenQuizWithOpenAI(
+          openai,
+          model,
+          {
+            pool,
+            mode: memoryMode,
+            visualTenTestMode,
+          },
+          difficulty
+        );
+      }
     } catch (genErr) {
       const msg =
         genErr && typeof genErr.message === "string"
