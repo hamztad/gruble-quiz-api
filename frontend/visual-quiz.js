@@ -1159,11 +1159,11 @@ function render() {
         }
         ${answerBlock}
         <div id="result" class="${resultClass}">${resultContent}</div>
-        ${protestBtnInline}
         <footer class="vq-footer">
           <button type="button" class="vq-btn-next" id="visual-next" ${
             qs.answered || revisionMode ? "" : "disabled"
           }>${isLast && qs.answered ? "Resultat" : "Neste"}</button>
+          ${protestBtnInline}
         </footer>
       </div>
     </section>

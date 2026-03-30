@@ -1206,6 +1206,178 @@ async function fetchAnswerForProtestFromDb(questionId) {
   }
 }
 
+function normalizeOptionListForMatch(options) {
+  return (Array.isArray(options) ? options : [])
+    .map((item) => normalizeQuizAnswerText(item))
+    .filter(Boolean)
+    .sort();
+}
+
+function storedQuestionMatchesProtestTarget(question, target) {
+  if (!question || typeof question !== "object") {
+    return false;
+  }
+  if (Number(question?.id) !== Number(target?.questionId)) {
+    return false;
+  }
+  if (
+    normalizeQuizQuestionText(question?.question) !==
+    normalizeQuizQuestionText(target?.questionText)
+  ) {
+    return false;
+  }
+  const storedOptions = normalizeOptionListForMatch(question?.options);
+  const targetOptions = normalizeOptionListForMatch(target?.options);
+  if (storedOptions.length !== targetOptions.length) {
+    return false;
+  }
+  for (let i = 0; i < storedOptions.length; i += 1) {
+    if (storedOptions[i] !== targetOptions[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function findStoredQuizRowForProtest(pool, target) {
+  const result = await pool.query(
+    `SELECT * FROM quizzes
+     ORDER BY created_at DESC
+     LIMIT 80`
+  );
+  for (const row of result.rows) {
+    const payload = getQuizQuestionsPayloadFromRow(row);
+    const questions = Array.isArray(payload?.questions) ? payload.questions : [];
+    const questionIndex = questions.findIndex((question) =>
+      storedQuestionMatchesProtestTarget(question, target)
+    );
+    if (questionIndex >= 0) {
+      return {
+        quizRow: row,
+        storedRaw: parseStoredQuizQuestionsRaw(row),
+        payload,
+        questionIndex,
+        question: questions[questionIndex],
+      };
+    }
+  }
+  return null;
+}
+
+function getStoredQuizExtraMetadata(storedRaw) {
+  if (!storedRaw || typeof storedRaw !== "object" || Array.isArray(storedRaw)) {
+    return null;
+  }
+  const { sharedImage, questions, ...extra } = storedRaw;
+  return extra;
+}
+
+async function generateReplacementQuestionForApprovedProtest({
+  openai,
+  model,
+  pool,
+  quizRow,
+  payload,
+  targetQuestion,
+}) {
+  const variant = String(payload?.variant ?? "").trim();
+  const difficulty = normalizeQuizDifficulty(quizRow?.difficulty);
+  const otherQuestions = (Array.isArray(payload?.questions) ? payload.questions : []).filter(
+    (question) => Number(question?.id) !== Number(targetQuestion?.id)
+  );
+
+  if (variant === VISUAL_TEN_QUIZ_VARIANT) {
+    if (targetQuestion?.imageQuestion === true) {
+      const sharedImage = payload?.sharedImage;
+      if (!sharedImage || typeof sharedImage !== "object") {
+        throw new Error("Stored visual-10 quiz is missing shared image");
+      }
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const candidate = await generateVisualClimaxQuestion(
+          openai,
+          model,
+          String(quizRow?.theme ?? "").trim() || VISUAL_TEN_DISPLAY_THEME,
+          sharedImage,
+          difficulty
+        );
+        const deduped = await filterQuizQuestionsAgainstMemory(
+          pool,
+          [candidate],
+          VISUAL_TEN_DISPLAY_THEME,
+          QUIZ_MEMORY_MODE.DAILY,
+          otherQuestions,
+          {
+            variant: VISUAL_TEN_QUIZ_VARIANT,
+            useSourceTheme: true,
+          }
+        );
+        if (deduped.questions.length > 0) {
+          return {
+            ...deduped.questions[0],
+            id: targetQuestion.id,
+            imageQuestion: true,
+          };
+        }
+      }
+      throw new Error("Could not generate unique replacement image question");
+    }
+
+    const sourceTheme = String(targetQuestion?.source_theme ?? "").trim();
+    if (!sourceTheme) {
+      throw new Error("Stored visual-10 question is missing source_theme");
+    }
+    const preset = VISUAL_TEN_THEME_PRESETS.find((item) => item.theme === sourceTheme);
+    const slot = {
+      theme: sourceTheme,
+      subjectMode: preset?.subjectMode === true,
+      focus: preset ? pickVisualTenFocusForPreset(preset) : "",
+    };
+    const recentVisualHistory = await fetchRecentVisualTenHistory(pool);
+    const batch = await generateVisualTenQuestionBatch(
+      openai,
+      model,
+      [slot],
+      otherQuestions.filter((question) => question?.imageQuestion !== true),
+      {
+        pool,
+        mode: QUIZ_MEMORY_MODE.DAILY,
+        recentByTheme: recentVisualHistory.recentByTheme,
+      },
+      difficulty
+    );
+    if (!Array.isArray(batch) || batch.length === 0) {
+      throw new Error("Could not generate replacement visual-10 question");
+    }
+    return {
+      ...batch[0],
+      id: targetQuestion.id,
+      source_theme: sourceTheme,
+    };
+  }
+
+  const parsed = await generateQuizWithOpenAI(
+    openai,
+    model,
+    String(quizRow?.theme ?? "").trim(),
+    1,
+    {
+      pool,
+      mode: QUIZ_MEMORY_MODE.CUSTOM,
+    },
+    false,
+    difficulty,
+    { skipDecorativeImages: true }
+  );
+  const replacement = Array.isArray(parsed?.questions) ? parsed.questions[0] : null;
+  if (!replacement || typeof replacement !== "object") {
+    throw new Error("Could not generate replacement question");
+  }
+  return {
+    ...replacement,
+    id: targetQuestion.id,
+  };
+}
+
 function pickQuestionFromBody(body, questions) {
   const { questionId, questionOverride } = body ?? {};
   const overrideQuestion =
@@ -3367,7 +3539,90 @@ app.post("/api/quiz/protest", async (req, res) => {
     return;
   }
 
-  res.status(200).json(normalizeProtestMvpResult(parsed));
+  const normalizedResult = normalizeProtestMvpResult(parsed);
+  if (normalizedResult.status !== "approved") {
+    res.status(200).json(normalizedResult);
+    return;
+  }
+
+  const pool = createDatabasePool();
+  try {
+    const storedQuiz = await findStoredQuizRowForProtest(pool, {
+      questionId,
+      questionText,
+      options,
+    });
+    if (!storedQuiz) {
+      res.status(404).json({ error: "Could not find the stored quiz for this protest" });
+      return;
+    }
+
+    const replacementQuestion = await generateReplacementQuestionForApprovedProtest({
+      openai,
+      model,
+      pool,
+      quizRow: storedQuiz.quizRow,
+      payload: storedQuiz.payload,
+      targetQuestion: storedQuiz.question,
+    });
+    const updatedQuestions = [...storedQuiz.payload.questions];
+    updatedQuestions[storedQuiz.questionIndex] = replacementQuestion;
+
+    const storedExtra = getStoredQuizExtraMetadata(storedQuiz.storedRaw) || {};
+    const extra =
+      String(storedQuiz.payload?.variant ?? "").trim() === VISUAL_TEN_QUIZ_VARIANT
+        ? {
+            ...storedExtra,
+            archiveLabel: buildVisualArchiveLabel(
+              updatedQuestions,
+              storedQuiz.quizRow?.created_at
+            ),
+          }
+        : storedExtra;
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("UPDATE quizzes SET questions = $1::jsonb WHERE id = $2", [
+        serializeQuizForStorage(storedQuiz.payload.sharedImage ?? null, updatedQuestions, extra),
+        storedQuiz.quizRow.id,
+      ]);
+      await insertQuizQuestionMemoryRows(
+        client,
+        String(storedQuiz.quizRow?.theme ?? "").trim(),
+        [replacementQuestion],
+        String(storedQuiz.payload?.variant ?? "").trim() === VISUAL_TEN_QUIZ_VARIANT
+          ? QUIZ_MEMORY_MODE.DAILY
+          : QUIZ_MEMORY_MODE.CUSTOM,
+        {
+          variant:
+            String(storedQuiz.payload?.variant ?? "").trim() === VISUAL_TEN_QUIZ_VARIANT
+              ? VISUAL_TEN_QUIZ_VARIANT
+              : "standard",
+          useSourceTheme:
+            String(storedQuiz.payload?.variant ?? "").trim() === VISUAL_TEN_QUIZ_VARIANT,
+        }
+      );
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    res.status(500).json({
+      error:
+        err && typeof err.message === "string"
+          ? err.message
+          : "Failed to replace stored quiz question after approved protest",
+    });
+    return;
+  } finally {
+    await pool.end().catch(() => {});
+  }
+
+  res.status(200).json(normalizedResult);
 });
 
 function getQuestionContextValidationError(questionText) {
