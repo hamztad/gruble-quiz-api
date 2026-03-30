@@ -2655,6 +2655,23 @@ function logVisualTenBatchInvalidFactTypes(questions, validationError) {
   }
 }
 
+/** Visual-10: ugyldig eller manglende fact_type skal ikke stoppe generering. */
+function coerceVisualTenFactTypes(payload) {
+  if (!payload || typeof payload !== "object" || !Array.isArray(payload.questions)) {
+    return payload;
+  }
+  return {
+    ...payload,
+    questions: payload.questions.map((question) => {
+      const factType = normalizeQuizFactType(question?.fact_type);
+      return {
+        ...question,
+        fact_type: factType || "concept",
+      };
+    }),
+  };
+}
+
 async function generateVisualTenQuestionBatch(
   openai,
   model,
@@ -2706,6 +2723,7 @@ async function generateVisualTenQuestionBatch(
           : "visual-10 batch OpenAI call failed";
       continue;
     }
+    parsed = coerceVisualTenFactTypes(parsed);
 
     const batchValidationError = validateGeneratedQuiz(
       parsed,
@@ -2836,8 +2854,9 @@ Returner KUN JSON med "theme" og "questions".`;
         response_format: { type: "json_object" },
       })
     );
+    const coercedParsed = coerceVisualTenFactTypes(parsed);
     const err = validateGeneratedQuiz(
-      parsed,
+      coercedParsed,
       themeStr,
       1,
       1,
@@ -2852,7 +2871,7 @@ Returner KUN JSON med "theme" og "questions".`;
       );
       continue;
     }
-    const q = parsed.questions?.[0];
+    const q = coercedParsed.questions?.[0];
     if (!q || typeof q.question !== "string" || !Array.isArray(q.options)) {
       continue;
     }
