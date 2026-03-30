@@ -3171,6 +3171,7 @@ app.get("/api/quiz/visual-archive", async (_req, res) => {
     const result = await pool.query(
       `SELECT id, theme, questions, created_at FROM quizzes
        WHERE questions::jsonb->>'variant' = $1
+         AND questions::jsonb->>'intervalSlotKey' IS NOT NULL
        ORDER BY created_at DESC
        LIMIT $2`,
       [VISUAL_TEN_QUIZ_VARIANT, VISUAL_ARCHIVE_LIST_LIMIT]
