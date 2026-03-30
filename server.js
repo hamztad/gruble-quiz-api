@@ -230,7 +230,7 @@ const VISUAL_TEN_CRON_INTERVAL_MINUTES = 10;
 const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   {
     theme: "historie",
-    weight: 10,
+    weight: 12,
     subjectMode: true,
     focusPool: [
       "epoker og perioder",
@@ -242,7 +242,7 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   },
   {
     theme: "geografi",
-    weight: 10,
+    weight: 12,
     subjectMode: true,
     focusPool: [
       "landformer og regioner",
@@ -254,7 +254,7 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   },
   {
     theme: "naturfag",
-    weight: 10,
+    weight: 12,
     subjectMode: true,
     focusPool: [
       "grunnstoffer og stoffer",
@@ -266,7 +266,7 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   },
   {
     theme: "kunst",
-    weight: 9,
+    weight: 8,
     subjectMode: true,
     focusPool: [
       "verk og motiver",
@@ -278,7 +278,7 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   },
   {
     theme: "musikk",
-    weight: 8,
+    weight: 7,
     subjectMode: false,
     focusPool: [
       "instrumenter",
@@ -290,7 +290,7 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   },
   {
     theme: "dyr",
-    weight: 8,
+    weight: 7,
     subjectMode: false,
     focusPool: [
       "leveområder",
@@ -302,7 +302,7 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   },
   {
     theme: "litteratur",
-    weight: 8,
+    weight: 7,
     subjectMode: false,
     focusPool: [
       "forfattere og verk",
@@ -314,7 +314,7 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   },
   {
     theme: "arkitektur",
-    weight: 7,
+    weight: 11,
     subjectMode: false,
     focusPool: [
       "byggverk",
@@ -325,20 +325,8 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
     ],
   },
   {
-    theme: "idrett",
-    weight: 7,
-    subjectMode: false,
-    focusPool: [
-      "regler og utstyr",
-      "turneringer",
-      "utøvere",
-      "arenaer og steder",
-      "rekorder og milepæler",
-    ],
-  },
-  {
     theme: "romfart",
-    weight: 7,
+    weight: 11,
     subjectMode: false,
     focusPool: [
       "oppdrag og sonder",
@@ -350,7 +338,7 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   },
   {
     theme: "teknologi",
-    weight: 7,
+    weight: 6,
     subjectMode: false,
     focusPool: [
       "digitale begreper",
@@ -362,7 +350,7 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   },
   {
     theme: "oppfinnelser",
-    weight: 7,
+    weight: 11,
     subjectMode: false,
     focusPool: [
       "oppfinnere",
@@ -374,7 +362,7 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   },
   {
     theme: "mytologi",
-    weight: 6,
+    weight: 5,
     subjectMode: false,
     focusPool: [
       "guder og vesener",
@@ -386,7 +374,7 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   },
   {
     theme: "verdensarv",
-    weight: 6,
+    weight: 11,
     subjectMode: false,
     focusPool: [
       "steder og land",
@@ -397,20 +385,8 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
     ],
   },
   {
-    theme: "film",
-    weight: 6,
-    subjectMode: false,
-    focusPool: [
-      "regissører og filmer",
-      "figurer og roller",
-      "sjangre",
-      "filmhistorie",
-      "priser og festivaler",
-    ],
-  },
-  {
     theme: "språk",
-    weight: 6,
+    weight: 11,
     subjectMode: false,
     focusPool: [
       "skrift og alfabet",
@@ -422,7 +398,7 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   },
   {
     theme: "botanikk",
-    weight: 6,
+    weight: 5,
     subjectMode: false,
     focusPool: [
       "plantegrupper",
@@ -434,7 +410,7 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   },
   {
     theme: "sjøfart",
-    weight: 5,
+    weight: 4,
     subjectMode: false,
     focusPool: [
       "skipstyper",
@@ -445,32 +421,8 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
     ],
   },
   {
-    theme: "mat og drikke",
-    weight: 5,
-    subjectMode: false,
-    focusPool: [
-      "råvarer",
-      "retter og tradisjoner",
-      "land og regioner",
-      "tilberedning",
-      "navn og begreper",
-    ],
-  },
-  {
-    theme: "teater",
-    weight: 5,
-    subjectMode: false,
-    focusPool: [
-      "dramatikere",
-      "verk og figurer",
-      "scene og uttrykk",
-      "teaterhistorie",
-      "sjangre og former",
-    ],
-  },
-  {
     theme: "religion",
-    weight: 5,
+    weight: 4,
     subjectMode: false,
     focusPool: [
       "høytider",
@@ -482,7 +434,7 @@ const VISUAL_TEN_THEME_PRESETS = Object.freeze([
   },
   {
     theme: "design",
-    weight: 5,
+    weight: 4,
     subjectMode: false,
     focusPool: [
       "stilarter",
@@ -3200,15 +3152,36 @@ async function generateAndStoreVisualTenQuiz(options = null) {
       }
     }
 
-    const parsed = await generateVisualTenQuizWithOpenAI(
-      openai,
-      model,
-      {
-        pool,
-        mode: memoryMode,
-      },
-      difficulty
-    );
+    let parsed;
+    try {
+      parsed = await generateVisualTenQuizWithOpenAI(
+        openai,
+        model,
+        {
+          pool,
+          mode: memoryMode,
+        },
+        difficulty
+      );
+    } catch (genErr) {
+      const msg =
+        genErr && typeof genErr.message === "string"
+          ? genErr.message
+          : String(genErr);
+      /* Cron: validerings-/batch-feil skal ikke gi prosess-exit 1; API uten interval kaster videre. */
+      if (intervalMeta?.intervalSlotKey) {
+        console.error(
+          `[visual-10] no_quiz_generated interval=${intervalMeta.intervalSlotKey} msg=${JSON.stringify(msg)}`
+        );
+        return {
+          skipped: true,
+          reason: "no_quiz_generated",
+          intervalSlotKey: intervalMeta.intervalSlotKey,
+          detail: msg,
+        };
+      }
+      throw genErr;
+    }
 
     const client = lockClient || (await pool.connect());
     try {
@@ -3274,21 +3247,33 @@ async function generateAndStoreVisualTenQuiz(options = null) {
 let visualTenScheduleTickInFlight = false;
 
 async function runVisualTenScheduleTick() {
+  const intervalMeta = getVisualTenCronIntervalMeta();
   if (visualTenScheduleTickInFlight) {
-    return { skipped: true, reason: "in_flight" };
+    return {
+      skipped: true,
+      reason: "in_flight",
+      intervalSlotKey: intervalMeta.intervalSlotKey,
+    };
   }
   visualTenScheduleTickInFlight = true;
   try {
-    const interval = getVisualTenCronIntervalMeta();
+    const interval = intervalMeta;
     const result = await generateAndStoreVisualTenQuiz({
       quizSource: QUIZ_MEMORY_MODE.DAILY,
       intervalMeta: interval,
     });
     if (result?.skipped) {
       console.log(
-        `[visual-10 schedule] interval=${interval.intervalSlotKey} skipped=${result.reason}`
+        `[visual-10 schedule] interval=${interval.intervalSlotKey} skipped=${result.reason}${
+          result.detail ? ` detail=${JSON.stringify(result.detail)}` : ""
+        }`
       );
-      return result;
+      return {
+        skipped: true,
+        reason: result.reason,
+        intervalSlotKey: interval.intervalSlotKey,
+        detail: result.detail,
+      };
     }
     console.log(`[visual-10 schedule] interval=${interval.intervalSlotKey} generated=true`);
     return {
@@ -3312,9 +3297,19 @@ async function runVisualTenScheduledCronJobOnce() {
     `[visual-10 schedule] timezone=${VISUAL_TEN_SCHEDULE_TIMEZONE} interval_minutes=${VISUAL_TEN_CRON_INTERVAL_MINUTES}`
   );
   const result = await runVisualTenScheduleTick();
-  if (result?.skipped) {
-    throw new Error(`visual-10 schedule skipped=${result.reason ?? "unknown"}`);
+  if (result?.generated) {
+    console.log(
+      `[visual-10 schedule] cron_done generated=true interval=${result.intervalSlotKey}`
+    );
+    return;
   }
+  if (result?.skipped) {
+    console.log(
+      `[visual-10 schedule] cron_done skipped=${result.reason ?? "unknown"} interval=${result.intervalSlotKey ?? "n/a"}`
+    );
+    return;
+  }
+  console.log("[visual-10 schedule] cron_done (unexpected empty result)");
 }
 
 /** One-off generation for shell / manual checks; skips cron interval deduplication. */
