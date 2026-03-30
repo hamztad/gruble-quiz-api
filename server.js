@@ -3103,6 +3103,7 @@ app.get("/api/quiz/visual-today", async (_req, res) => {
     const result = await pool.query(
       `SELECT * FROM quizzes
        WHERE questions::jsonb->>'variant' = $1
+         AND questions::jsonb->>'intervalSlotKey' IS NOT NULL
        ORDER BY created_at DESC
        LIMIT 25`,
       [VISUAL_TEN_QUIZ_VARIANT]
