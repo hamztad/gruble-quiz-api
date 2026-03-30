@@ -535,15 +535,16 @@ body.vq-strip-minimal .vq-footer-hint {
   border-bottom: 1px solid var(--vq-border);
 }
 
-.vq-play__header-actions {
+.vq-play__actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 0.5rem;
+  margin: 0.85rem 0 0.75rem;
 }
 
-.vq-play__header-actions .vq-btn-next {
+.vq-play__actions .vq-btn-next {
   padding: 0.5rem 0.95rem;
   font-size: 0.875rem;
   box-shadow: none;
@@ -769,18 +770,102 @@ body.vq-strip-minimal .vq-footer-hint {
   box-shadow: var(--vq-shadow);
 }
 
-.vq-image-frame img {
+.vq-image-zoom-trigger {
   display: block;
   width: 100%;
-  max-height: min(52vh, 22rem);
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: zoom-in;
+  line-height: 0;
+}
+
+.vq-image-zoom-trigger:focus-visible {
+  outline: 2px solid var(--vq-accent);
+  outline-offset: 2px;
+}
+
+.vq-image-zoom-trigger img {
+  display: block;
+  width: 100%;
+  max-height: min(26vh, 11rem);
   object-fit: contain;
   object-position: center;
 }
 
 @media (max-width: 480px) {
-  .vq-image-frame img {
-    max-height: 40vh;
+  .vq-image-zoom-trigger img {
+    max-height: 20vh;
   }
+}
+
+.vq-image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+}
+
+.vq-image-lightbox--hidden {
+  display: none;
+}
+
+.vq-image-lightbox__backdrop {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: rgba(12, 10, 9, 0.9);
+  cursor: pointer;
+}
+
+.vq-image-lightbox__inner {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.35rem;
+  max-width: 96vw;
+  max-height: 96vh;
+  pointer-events: none;
+}
+
+.vq-image-lightbox__inner .vq-image-lightbox__close,
+.vq-image-lightbox__inner .vq-image-lightbox__img {
+  pointer-events: auto;
+}
+
+.vq-image-lightbox__close {
+  font-family: var(--font-ui);
+  font-size: 1.75rem;
+  line-height: 1;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  cursor: pointer;
+}
+
+.vq-image-lightbox__close:hover {
+  background: rgba(0, 0, 0, 0.65);
+}
+
+.vq-image-lightbox__img {
+  display: block;
+  max-width: 96vw;
+  max-height: min(92vh, 900px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: var(--vq-radius-sm);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
 }
 
 .vq-image-frame figcaption {

@@ -940,9 +940,13 @@ function render() {
   const imageBlock =
     img && img.url
       ? `<figure class="vq-image-frame">
-           <img src="${escapeHtml(img.url)}" alt="${escapeHtml(
-             img.title || "Illustrasjon til quizen"
-           )}" loading="lazy" />
+           <button type="button" class="vq-image-zoom-trigger" aria-label="Vis bilde i fullskjerm">
+             <img src="${escapeHtml(img.url)}" alt="${escapeHtml(
+               img.title || "Illustrasjon til quizen"
+             )}" loading="lazy" data-full-src="${escapeHtml(img.url)}" data-full-alt="${escapeHtml(
+               img.title || "Illustrasjon til quizen"
+             )}" />
+           </button>
            <figcaption class="vq-image-credit">${captionInner}</figcaption>
          </figure>`
       : `<p class="vq-image-missing">Mangler bilde.</p>`;
@@ -1149,12 +1153,19 @@ function render() {
   const activeQuizMetaPill = activeQuizMetaParts.length
     ? `<span class="vq-pill">${escapeHtml(activeQuizMetaParts.join(" · "))}</span>`
     : "";
-  const nextBtnHeader = `<button type="button" class="vq-btn-next" id="visual-next" ${
+  const nextBtnPlay = `<button type="button" class="vq-btn-next" id="visual-next" ${
     qs.answered || revisionMode ? "" : "disabled"
   }>${isLast && qs.answered ? "Resultat" : "Neste"}</button>`;
-  const protestBtnHeader = revisionMode
+  const protestBtnPlay = revisionMode
     ? ""
     : '<button type="button" class="vq-btn-ghost" data-protest-open="1">Protester</button>';
+  const playActionsRow = `
+    <div class="vq-play__actions">
+      ${nextBtnPlay}
+      ${protestBtnPlay}
+      <button type="button" class="vq-btn-ghost" id="visual-reload">Nytt</button>
+    </div>
+  `;
 
   el.innerHTML = `
     <section class="vq-play">
@@ -1162,11 +1173,6 @@ function render() {
         <div class="vq-pills">
           <span class="vq-pill vq-pill--score">${state.totalScore} poeng</span>
           ${activeQuizMetaPill}
-        </div>
-        <div class="vq-play__header-actions">
-          ${nextBtnHeader}
-          ${protestBtnHeader}
-          <button type="button" class="vq-btn-ghost" id="visual-reload">Nytt</button>
         </div>
       </header>
 
@@ -1189,10 +1195,61 @@ function render() {
             : `<h2 class="vq-question-title">${escapeHtml(question.question)}</h2>`
         }
         ${answerBlock}
+        ${playActionsRow}
         <div id="result" class="${resultClass}">${resultContent}</div>
+      </div>
+      <div id="vq-image-lightbox" class="vq-image-lightbox vq-image-lightbox--hidden" role="dialog" aria-modal="true" aria-label="Bilde i fullskjerm">
+        <button type="button" class="vq-image-lightbox__backdrop" aria-label="Lukk"></button>
+        <div class="vq-image-lightbox__inner">
+          <button type="button" class="vq-image-lightbox__close" aria-label="Lukk">×</button>
+          <img class="vq-image-lightbox__img" src="" alt="" />
+        </div>
       </div>
     </section>
   `;
+
+  const lightbox = el.querySelector("#vq-image-lightbox");
+  if (lightbox) {
+    const lbImg = lightbox.querySelector(".vq-image-lightbox__img");
+    let escHandler = null;
+    const closeLightbox = () => {
+      lightbox.classList.add("vq-image-lightbox--hidden");
+      if (lbImg) {
+        lbImg.src = "";
+        lbImg.alt = "";
+      }
+      if (escHandler) {
+        document.removeEventListener("keydown", escHandler);
+        escHandler = null;
+      }
+    };
+    el.querySelector(".vq-image-zoom-trigger")?.addEventListener("click", () => {
+      const thumb = el.querySelector(".vq-image-zoom-trigger img");
+      if (!thumb || !lbImg) {
+        return;
+      }
+      const src = thumb.getAttribute("data-full-src") || thumb.getAttribute("src") || "";
+      const altText = thumb.getAttribute("data-full-alt") || thumb.getAttribute("alt") || "";
+      lbImg.src = src;
+      lbImg.alt = altText;
+      lightbox.classList.remove("vq-image-lightbox--hidden");
+      if (escHandler) {
+        document.removeEventListener("keydown", escHandler);
+      }
+      escHandler = (e) => {
+        if (e.key === "Escape") {
+          closeLightbox();
+        }
+      };
+      document.addEventListener("keydown", escHandler);
+    });
+    lightbox
+      .querySelector(".vq-image-lightbox__backdrop")
+      ?.addEventListener("click", closeLightbox);
+    lightbox
+      .querySelector(".vq-image-lightbox__close")
+      ?.addEventListener("click", closeLightbox);
+  }
 
   document.getElementById("visual-reload")?.addEventListener("click", () => {
     state.questions = [];
