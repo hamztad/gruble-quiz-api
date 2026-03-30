@@ -2974,30 +2974,33 @@ let visualTenScheduleTickInFlight = false;
 
 async function runVisualTenScheduleTick() {
   if (visualTenScheduleTickInFlight) {
-    return;
+    return { skipped: true, reason: "in_flight" };
   }
   visualTenScheduleTickInFlight = true;
   try {
     const interval = getVisualTenCronIntervalMeta();
-    try {
-      const result = await generateAndStoreVisualTenQuiz({
-        quizSource: QUIZ_MEMORY_MODE.DAILY,
-        intervalMeta: interval,
-      });
-      if (result?.skipped) {
-        console.log(
-          `[visual-10 schedule] interval=${interval.intervalSlotKey} skipped=${result.reason}`
-        );
-      } else {
-        console.log(`[visual-10 schedule] interval=${interval.intervalSlotKey} generated=true`);
-      }
-    } catch (err) {
-      console.error(
-        `[visual-10 schedule] interval=${interval.intervalSlotKey} failed=${
-          err && typeof err.message === "string" ? err.message : String(err)
-        }`
+    const result = await generateAndStoreVisualTenQuiz({
+      quizSource: QUIZ_MEMORY_MODE.DAILY,
+      intervalMeta: interval,
+    });
+    if (result?.skipped) {
+      console.log(
+        `[visual-10 schedule] interval=${interval.intervalSlotKey} skipped=${result.reason}`
       );
+      return result;
     }
+    console.log(`[visual-10 schedule] interval=${interval.intervalSlotKey} generated=true`);
+    return {
+      generated: true,
+      intervalSlotKey: interval.intervalSlotKey,
+    };
+  } catch (err) {
+    console.error(
+      `[visual-10 schedule] failed=${
+        err && typeof err.message === "string" ? err.message : String(err)
+      }`
+    );
+    throw err;
   } finally {
     visualTenScheduleTickInFlight = false;
   }
@@ -3007,7 +3010,10 @@ async function runVisualTenScheduledCronJobOnce() {
   console.log(
     `[visual-10 schedule] timezone=${VISUAL_TEN_SCHEDULE_TIMEZONE} interval_minutes=${VISUAL_TEN_CRON_INTERVAL_MINUTES}`
   );
-  await runVisualTenScheduleTick();
+  const result = await runVisualTenScheduleTick();
+  if (result?.skipped) {
+    throw new Error(`visual-10 schedule skipped=${result.reason ?? "unknown"}`);
+  }
 }
 
 /** One-off generation for shell / manual checks; skips cron interval deduplication. */
