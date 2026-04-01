@@ -256,6 +256,12 @@ function isVisualTenLegacyCronEnabled() {
   return /^(1|true|yes|on)$/i.test(raw);
 }
 
+/** Når satt: cron bruker kun stub-spørsmål (ingen LLM), men forsøker fortsatt dekor-bilde. */
+function isVisualTenCronOpenAiDisabled() {
+  const raw = String(process.env.VISUAL_TEN_CRON_OPENAI_DISABLE ?? "").trim();
+  return /^(1|true|yes|on)$/i.test(raw);
+}
+
 function visualTenSimpleCronHashMod(seed, modulo) {
   const m = Math.max(1, Number(modulo) || 1);
   const h = hashStringToPgLockId(String(seed ?? ""));
@@ -2928,6 +2934,237 @@ function buildSimpleMachineVisualTenQuiz(seedKey) {
   };
 }
 
+const CRON_VISUAL_TEN_OPENAI_SYSTEM = [
+  "Du er en norsk quizforfatter for allmennkunnskap.",
+  "Svar kun med gyldig JSON. Ingen markdown, ingen forklaring utenfor JSON.",
+  "Spørsmålene skal være konkrete faktaspørsmål med ett klart riktig svar blant alternativene.",
+  "Ikke spør om quizens struktur, kategorier for «dette spørsmålet», eller meta om quizen.",
+].join(" ");
+
+const CRON_SHARED_IMAGE_THEMES = Object.freeze([
+  "geografi",
+  "historie",
+  "naturfag",
+  "kunst",
+  "musikk",
+  "norge",
+  "dyr",
+  "romfart",
+]);
+
+function buildCronVisualTenOpenAiUserPrompt(seedKey) {
+  const cats = VISUAL_TEN_SIMPLE_CRON_CATEGORIES.join(", ");
+  const seed = String(seedKey ?? "").trim() || "quiz";
+  return [
+    `Lag nøyaktig 9 flervalgsspørsmål på bokmål.`,
+    `Returner JSON-objekt med én nøkkel "questions" som er en liste med 9 objekter.`,
+    `Hvert objekt skal ha:`,
+    `- "question": streng (selve spørsmålet)`,
+    `- "options": liste med nøyaktig 4 forskjellige svaralternativer (strenger)`,
+    `- "answer": streng som er identisk med ett av elementene i "options"`,
+    `- "source_theme": én kategori fra listen under (kopier stavemåte nøyaktig)`,
+    ``,
+    `Kategorier for source_theme: ${cats}`,
+    `Bruk varierte kategorier; ikke gjenta samme source_theme i alle spørsmål.`,
+    `Vanskelighetsgrad: blandet allmennkunnskap for voksne.`,
+    ``,
+    `Variasjonsfrø (bruk som inspirasjon, ikke gjenta ordrett): ${seed}`,
+    ``,
+    `Eksempel på gyldig toppnivå: {"questions":[{...}, ...]}`,
+  ].join("\n");
+}
+
+function cronQuestionLooksMeta(text) {
+  const t = String(text ?? "").toLowerCase();
+  if (t.includes("kategori") && (t.includes("dette spørsmålet") || t.includes("temaet for dette"))) {
+    return true;
+  }
+  if (t.includes("hvilken kategori beskriver") && t.includes("spørsmål")) {
+    return true;
+  }
+  return false;
+}
+
+function coerceCronOpenAiQuestion(raw, index1Based) {
+  const fallbackTheme =
+    VISUAL_TEN_SIMPLE_CRON_CATEGORIES[
+      (index1Based - 1) % VISUAL_TEN_SIMPLE_CRON_CATEGORIES.length
+    ];
+  const qText = String(raw?.question ?? "").trim();
+  let options = Array.isArray(raw?.options)
+    ? raw.options.map((o) => String(o ?? "").trim()).filter(Boolean)
+    : [];
+  const uniq = [];
+  const seen = new Set();
+  for (const o of options) {
+    const k = o.toLowerCase();
+    if (!o || seen.has(k)) {
+      continue;
+    }
+    seen.add(k);
+    uniq.push(o);
+    if (uniq.length >= 4) {
+      break;
+    }
+  }
+  while (uniq.length < 4) {
+    uniq.push(`Alternativ ${uniq.length + 1}`);
+  }
+  const four = uniq.slice(0, 4);
+  let answer = String(raw?.answer ?? "").trim();
+  if (!four.includes(answer)) {
+    answer = four[0];
+  }
+  let source_theme = String(raw?.source_theme ?? "").trim();
+  if (!source_theme) {
+    source_theme = fallbackTheme;
+  }
+  const shuffled = shuffleArray([...four]);
+  if (!shuffled.includes(answer)) {
+    answer = shuffled[0];
+  }
+  return {
+    id: index1Based,
+    question: qText || `Faktaspørsmål ${index1Based}`,
+    options: shuffled,
+    answer,
+    source_theme,
+    fact_key: buildVisualTenTestModeFactKey(source_theme, index1Based),
+    fact_type: "concept",
+  };
+}
+
+function validateCronOpenAiNineQuestions(nine) {
+  if (!Array.isArray(nine) || nine.length !== 9) {
+    return "length";
+  }
+  for (let i = 0; i < 9; i += 1) {
+    const q = nine[i];
+    const text = String(q?.question ?? "").trim();
+    if (text.length < 14) {
+      return `q${i}_short`;
+    }
+    if (cronQuestionLooksMeta(text)) {
+      return `q${i}_meta`;
+    }
+    if (!Array.isArray(q.options) || q.options.length !== 4) {
+      return `q${i}_opts`;
+    }
+    const opts = q.options.map((o) => String(o ?? "").trim());
+    if (!opts.every((o) => o.length > 0)) {
+      return `q${i}_empty_opt`;
+    }
+    const lower = opts.map((o) => o.toLowerCase());
+    if (new Set(lower).size !== 4) {
+      return `q${i}_dup_opt`;
+    }
+    const ans = String(q.answer ?? "").trim();
+    if (!opts.includes(ans)) {
+      return `q${i}_answer`;
+    }
+  }
+  return null;
+}
+
+function buildVisualTenQuizBodyFromNineAndImage(nineQuestions, sharedImage) {
+  const themeStr = VISUAL_TEN_DISPLAY_THEME;
+  const img =
+    sharedImage && typeof sharedImage === "object" && String(sharedImage.url ?? "").trim()
+      ? { ...sharedImage }
+      : { ...VISUAL_TEN_TEST_MODE_FALLBACK_IMAGE };
+  const sortedNine = nineQuestions.map((q, i) => ({ ...q, id: i + 1 }));
+  const q10 = buildVisualTenTestModeFallbackImageQuestion(img, themeStr);
+  return {
+    theme: themeStr,
+    questions: [...sortedNine, { ...q10, id: 10 }],
+    sharedImage: img,
+    variant: VISUAL_TEN_QUIZ_VARIANT,
+  };
+}
+
+function applySharedImageToVisualTenQuiz(parsed, sharedImage) {
+  const nine = (parsed?.questions || [])
+    .filter((q) => q && !q.imageQuestion)
+    .slice(0, 9)
+    .map((q, i) => ({ ...q, id: i + 1 }));
+  return buildVisualTenQuizBodyFromNineAndImage(nine, sharedImage);
+}
+
+async function tryResolveCronSharedImage(seedKey) {
+  const fallback = { ...VISUAL_TEN_TEST_MODE_FALLBACK_IMAGE };
+  const n = CRON_SHARED_IMAGE_THEMES.length;
+  const base = visualTenSimpleCronHashMod(seedKey, n);
+  for (let i = 0; i < 3; i += 1) {
+    const theme = CRON_SHARED_IMAGE_THEMES[(base + i) % n];
+    try {
+      const shared = await pickSharedDecorativeImage(
+        theme,
+        getEmptyThemeLookupSupport(),
+        ""
+      );
+      if (shared && typeof shared.url === "string" && shared.url.trim()) {
+        return shared;
+      }
+    } catch (err) {
+      console.warn(
+        `[visual-10 cron_image] theme=${JSON.stringify(theme)} err=${JSON.stringify(
+          err && typeof err.message === "string" ? err.message : String(err)
+        )}`
+      );
+    }
+  }
+  return fallback;
+}
+
+async function generateCronVisualTenLlmOrStub(openai, model, seedKey, sharedImage) {
+  const attempts = Math.min(
+    5,
+    Math.max(1, Number(process.env.VISUAL_TEN_CRON_OPENAI_ATTEMPTS) || 2)
+  );
+  let lastErr = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const raw = await parseJsonChatCompletion(
+        openai.chat.completions.create({
+          model,
+          messages: [
+            { role: "system", content: CRON_VISUAL_TEN_OPENAI_SYSTEM },
+            { role: "user", content: buildCronVisualTenOpenAiUserPrompt(seedKey) },
+          ],
+          response_format: { type: "json_object" },
+        })
+      );
+      const arr = Array.isArray(raw?.questions) ? raw.questions : null;
+      if (!arr || arr.length < 9) {
+        lastErr = "questions_length";
+        continue;
+      }
+      const nine = arr
+        .slice(0, 9)
+        .map((q, idx) => coerceCronOpenAiQuestion(q, idx + 1));
+      const validationError = validateCronOpenAiNineQuestions(nine);
+      if (validationError) {
+        lastErr = validationError;
+        continue;
+      }
+      const parsed = buildVisualTenQuizBodyFromNineAndImage(nine, sharedImage);
+      console.log(`[visual-10 cron_llm] ok attempt=${attempt + 1}/${attempts}`);
+      return { parsed, generationMode: "cron-llm" };
+    } catch (err) {
+      lastErr = err && typeof err.message === "string" ? err.message : String(err);
+      console.warn(
+        `[visual-10 cron_llm] attempt=${attempt + 1}/${attempts} err=${JSON.stringify(lastErr)}`
+      );
+    }
+  }
+  console.warn(`[visual-10 cron_llm] fallback_stub last=${JSON.stringify(lastErr)}`);
+  const stub = applySharedImageToVisualTenQuiz(
+    buildSimpleMachineVisualTenQuiz(seedKey),
+    sharedImage
+  );
+  return { parsed: stub, generationMode: "simple-cron" };
+}
+
 async function generateVisualTenQuestionBatch(
   openai,
   model,
@@ -3483,8 +3720,9 @@ async function scheduledVisualTenQuizExists(poolOrClient, intervalSlotKey) {
 }
 
 /**
- * Lagrer visual-10-format uten OpenAI, uten quiz_memory, uten validering.
- * Kun for planlagt cron / manuell cron-test når VISUAL_TEN_LEGACY_CRON ikke er satt.
+ * Lagrer visual-10-format uten quiz_memory og uten legacy batch-pipeline.
+ * Forsøker OpenAI for 9 faktaspørsmål (cron-llm), med stub som fallback; spørsmål 10 er alltid bilde.
+ * Kun når VISUAL_TEN_LEGACY_CRON ikke er satt.
  */
 async function generateAndStoreSimpleVisualTenQuiz(options = null) {
   const opts = options && typeof options === "object" ? options : {};
@@ -3497,6 +3735,54 @@ async function generateAndStoreSimpleVisualTenQuiz(options = null) {
     opts.intervalMeta && typeof opts.intervalMeta === "object" ? opts.intervalMeta : null;
   const seedKey =
     intervalMeta?.intervalSlotKey ?? `manual-${Date.now()}`;
+
+  if (intervalMeta?.intervalSlotKey) {
+    const quickPool = createDatabasePool();
+    try {
+      if (await scheduledVisualTenQuizExists(quickPool, intervalMeta.intervalSlotKey)) {
+        console.log(
+          `[visual-10 quiz_machine] skip_early already_exists interval=${intervalMeta.intervalSlotKey}`
+        );
+        return {
+          skipped: true,
+          reason: "already_exists",
+          intervalSlotKey: intervalMeta.intervalSlotKey,
+        };
+      }
+    } finally {
+      await quickPool.end().catch(() => {});
+    }
+  }
+
+  const sharedImage = await tryResolveCronSharedImage(seedKey);
+  const apiKey = process.env.OPENAI_API_KEY;
+  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  let parsed;
+  let generationMode;
+
+  if (!apiKey || isVisualTenCronOpenAiDisabled()) {
+    parsed = applySharedImageToVisualTenQuiz(
+      buildSimpleMachineVisualTenQuiz(seedKey),
+      sharedImage
+    );
+    generationMode = "simple-cron";
+    if (!apiKey) {
+      console.log("[visual-10 quiz_machine] no OPENAI_API_KEY; stub questions");
+    }
+    if (isVisualTenCronOpenAiDisabled()) {
+      console.log("[visual-10 quiz_machine] VISUAL_TEN_CRON_OPENAI_DISABLE; stub questions");
+    }
+  } else {
+    const openai = new OpenAI({ apiKey });
+    const result = await generateCronVisualTenLlmOrStub(
+      openai,
+      model,
+      seedKey,
+      sharedImage
+    );
+    parsed = result.parsed;
+    generationMode = result.generationMode;
+  }
 
   const pool = createDatabasePool();
   const lockClient = intervalMeta ? await pool.connect() : null;
@@ -3517,8 +3803,6 @@ async function generateAndStoreSimpleVisualTenQuiz(options = null) {
       }
     }
 
-    const parsed = buildSimpleMachineVisualTenQuiz(seedKey);
-
     const client = lockClient || (await pool.connect());
     try {
       await client.query("BEGIN");
@@ -3535,7 +3819,7 @@ async function generateAndStoreSimpleVisualTenQuiz(options = null) {
           serializeQuizForStorage(parsed.sharedImage ?? null, parsed.questions, {
             variant: VISUAL_TEN_QUIZ_VARIANT,
             archiveLabel: buildVisualArchiveLabel(parsed.questions, new Date()),
-            generationMode: "simple-cron",
+            generationMode,
             ...(intervalMeta ? intervalMeta : {}),
           }),
           difficulty,
@@ -3552,7 +3836,7 @@ async function generateAndStoreSimpleVisualTenQuiz(options = null) {
     }
 
     console.log(
-      `[visual-10 quiz_machine] stored interval=${intervalMeta?.intervalSlotKey ?? "manual"} questions=${parsed.questions.length}`
+      `[visual-10 quiz_machine] stored interval=${intervalMeta?.intervalSlotKey ?? "manual"} generation=${generationMode} questions=${parsed.questions.length}`
     );
 
     return {
@@ -3560,7 +3844,7 @@ async function generateAndStoreSimpleVisualTenQuiz(options = null) {
       difficulty,
       variant: VISUAL_TEN_QUIZ_VARIANT,
       memoryMode,
-      generationMode: "simple-cron",
+      generationMode,
     };
   } finally {
     if (lockHeld && lockClient && intervalMeta?.intervalSlotKey) {
