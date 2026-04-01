@@ -235,6 +235,13 @@ const VISUAL_TEN_TEST_MODE_FALLBACK_IMAGE = Object.freeze({
   pageUrl: "https://commons.wikimedia.org/wiki/File:Example.jpg",
 });
 
+function isVisualTenCronFallbackSharedImage(img) {
+  if (!img || typeof img !== "object") {
+    return true;
+  }
+  return String(img.url ?? "").trim() === String(VISUAL_TEN_TEST_MODE_FALLBACK_IMAGE.url).trim();
+}
+
 /** Roterende kategorier for planlagt cron uten OpenAI (variert innhold, ingen kvalitetsporter). */
 const VISUAL_TEN_SIMPLE_CRON_CATEGORIES = Object.freeze([
   "Geografi",
@@ -260,6 +267,19 @@ function isVisualTenLegacyCronEnabled() {
 function isVisualTenCronOpenAiDisabled() {
   const raw = String(process.env.VISUAL_TEN_CRON_OPENAI_DISABLE ?? "").trim();
   return /^(1|true|yes|on)$/i.test(raw);
+}
+
+/**
+ * Tilbakerulling: sett VISUAL_TEN_COMMONS_Q10_DISABLE=1 (eller det eldre
+ * VISUAL_TEN_WIKIPEDIA_Q10_DISABLE=1) → Pixabay tillates igjen for cron-bilde,
+ * og spørsmål 10 bruker mal (tittel) uten Commons-metadata + ekstra LLM.
+ */
+function isVisualTenCommonsQ10Disabled() {
+  const commons = String(process.env.VISUAL_TEN_COMMONS_Q10_DISABLE ?? "").trim();
+  const legacy = String(process.env.VISUAL_TEN_WIKIPEDIA_Q10_DISABLE ?? "").trim();
+  return (
+    /^(1|true|yes|on)$/i.test(commons) || /^(1|true|yes|on)$/i.test(legacy)
+  );
 }
 
 function visualTenSimpleCronHashMod(seed, modulo) {
@@ -3090,17 +3110,318 @@ function applySharedImageToVisualTenQuiz(parsed, sharedImage) {
   return buildVisualTenQuizBodyFromNineAndImage(nine, sharedImage);
 }
 
+const COMMONS_Q10_HTTP_TIMEOUT_MS = 6500;
+const COMMONS_Q10_IMAGE_DESC_MAX_CHARS = 900;
+
+function stripCommonsExtMetaPlain(s) {
+  return String(s ?? "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function commonsExtMetadataPlainValue(extmetadata, key) {
+  if (!extmetadata || typeof extmetadata !== "object") {
+    return "";
+  }
+  const cell = extmetadata[key];
+  if (!cell || typeof cell !== "object") {
+    return "";
+  }
+  const raw =
+    cell.value != null
+      ? String(cell.value)
+      : cell.source != null
+        ? String(cell.source)
+        : "";
+  return stripCommonsExtMetaPlain(raw);
+}
+
+function commonsFullFilePageTitleFromStoredTitle(storedTitle) {
+  let t = String(storedTitle ?? "").trim();
+  if (!t) {
+    return "";
+  }
+  if (!/^file:/i.test(t)) {
+    t = `File:${t}`;
+  }
+  return t;
+}
+
+/**
+ * Henter extmetadata for et Commons-bilde via Action API (kun commons.wikimedia.org).
+ * @returns {Record<string, { value?: string, source?: string }>|null}
+ */
+async function fetchCommonsImageExtMetadataForVisualTen(storedTitle) {
+  const titles = commonsFullFilePageTitleFromStoredTitle(storedTitle);
+  if (!titles) {
+    return null;
+  }
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), COMMONS_Q10_HTTP_TIMEOUT_MS);
+  try {
+    const u = new URL("https://commons.wikimedia.org/w/api.php");
+    u.search = new URLSearchParams({
+      action: "query",
+      format: "json",
+      prop: "imageinfo",
+      titles,
+      iiprop: "url|size|mime|extmetadata",
+      origin: "*",
+    }).toString();
+    const res = await fetch(u.toString(), {
+      signal: ac.signal,
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "gruble-quiz-api/0.1 (commons extmetadata; visual-10 cron)",
+      },
+    });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    if (data?.error) {
+      throw new Error(String(data.error.code ?? "api_error"));
+    }
+    const pages = data?.query?.pages;
+    if (!pages || typeof pages !== "object") {
+      return null;
+    }
+    const page = Object.values(pages)[0];
+    if (!page || page.missing === true || page.missing === "") {
+      return null;
+    }
+    const ii = Array.isArray(page.imageinfo) ? page.imageinfo[0] : null;
+    const ext = ii?.extmetadata;
+    if (!ext || typeof ext !== "object") {
+      return null;
+    }
+    return ext;
+  } catch (err) {
+    console.warn(
+      `[visual-10 commons_q10] extmetadata_fetch err=${JSON.stringify(
+        err && typeof err.message === "string" ? err.message : String(err)
+      )}`
+    );
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Velger ett faktafelt etter prioritet: ImageDescription → Artist → DateTimeOriginal → GPS → LicenseShortName.
+ * @returns {{ key: string, labelNb: string, text: string } | null}
+ */
+function pickCommonsMetadataFactAnchor(extmetadata) {
+  const desc = commonsExtMetadataPlainValue(extmetadata, "ImageDescription");
+  if (desc.length >= 14) {
+    const clipped =
+      desc.length > COMMONS_Q10_IMAGE_DESC_MAX_CHARS
+        ? `${desc.slice(0, COMMONS_Q10_IMAGE_DESC_MAX_CHARS).trim()}…`
+        : desc;
+    return { key: "ImageDescription", labelNb: "Beskrivelse", text: clipped };
+  }
+  const artist = commonsExtMetadataPlainValue(extmetadata, "Artist");
+  if (artist.length >= 3) {
+    return { key: "Artist", labelNb: "Opphavsperson / fotograf", text: artist };
+  }
+  const dt = commonsExtMetadataPlainValue(extmetadata, "DateTimeOriginal");
+  if (dt.length >= 4) {
+    return { key: "DateTimeOriginal", labelNb: "Dato / tidspunkt", text: dt };
+  }
+  const lat = commonsExtMetadataPlainValue(extmetadata, "GPSLatitude");
+  const lon = commonsExtMetadataPlainValue(extmetadata, "GPSLongitude");
+  if (lat.length >= 2 && lon.length >= 2) {
+    return {
+      key: "GPS",
+      labelNb: "GPS-posisjon",
+      text: `${lat} / ${lon}`,
+    };
+  }
+  const lic = commonsExtMetadataPlainValue(extmetadata, "LicenseShortName");
+  if (lic.length >= 2) {
+    return { key: "LicenseShortName", labelNb: "Lisens", text: lic };
+  }
+  return null;
+}
+
+function buildCommonsQ10UserMetadataContext(extmetadata, anchor) {
+  const lines = [
+    `Primærfelt (${anchor.labelNb}, ${anchor.key}):`,
+    anchor.text,
+    "",
+    "Øvrige felter fra Commons extmetadata (bruk kun det som står her; ikke finn på fakta):",
+  ];
+  const extraKeys = [
+    "ObjectName",
+    "ImageDescription",
+    "Artist",
+    "Credit",
+    "DateTimeOriginal",
+    "DateTime",
+    "GPSLatitude",
+    "GPSLongitude",
+    "LicenseShortName",
+    "UsageTerms",
+  ];
+  const seen = new Set([anchor.key]);
+  for (let i = 0; i < extraKeys.length; i += 1) {
+    const k = extraKeys[i];
+    if (seen.has(k)) {
+      continue;
+    }
+    const v = commonsExtMetadataPlainValue(extmetadata, k);
+    if (!v || v.length > 220) {
+      continue;
+    }
+    lines.push(`- ${k}: ${v}`);
+  }
+  return lines.join("\n");
+}
+
+const CRON_COMMONS_Q10_SYSTEM = [
+  "Du lager ett norsk flervalgsspørsmål (bokmål) ut fra strukturerte metadata fra Wikimedia Commons (extmetadata).",
+  "Spørsmålet og den riktige fasiten må kunne forsvares utelukkende ut fra metadata du får — ikke bruk egen kunnskap utover det.",
+  "Ikke nevn Commons, API, metadatafelt eller tekniske nøkler (f.eks. ImageDescription) i spørsmålsteksten.",
+  "Lag tre plausibel feil svar (samme type som fasiten) som fortsatt er gale ifølge metadata.",
+  "Svar kun med gyldig JSON: {\"question\": string, \"options\": [fire distinkte strenger], \"answer\": streng identisk med ett av alternativene}. Du kan alternativt bruke \"correctIndex\" (0–3) i stedet for \"answer\".",
+].join(" ");
+
+function coerceAndValidateCronCommonsMetadataQ10(raw) {
+  const qText = String(raw?.question ?? "").trim();
+  if (qText.length < 14 || cronQuestionLooksMeta(qText)) {
+    return null;
+  }
+  const rawOptions = Array.isArray(raw?.options)
+    ? raw.options.map((o) => String(o ?? "").trim()).filter(Boolean)
+    : [];
+  const uniq = [];
+  const seen = new Set();
+  for (let i = 0; i < rawOptions.length; i += 1) {
+    const o = rawOptions[i];
+    const k = o.toLowerCase();
+    if (!o || seen.has(k)) {
+      continue;
+    }
+    seen.add(k);
+    uniq.push(o);
+    if (uniq.length >= 4) {
+      break;
+    }
+  }
+  while (uniq.length < 4) {
+    uniq.push(`Alternativ ${uniq.length + 1}`);
+  }
+  const four = uniq.slice(0, 4);
+  let answer = String(raw?.answer ?? "").trim();
+  const ciRaw = raw?.correctIndex;
+  if ((!answer || !four.includes(answer)) && Number.isFinite(Number(ciRaw))) {
+    const idx = Math.trunc(Number(ciRaw));
+    if (idx >= 0 && idx < four.length && four[idx]) {
+      answer = four[idx];
+    }
+  }
+  if (!four.includes(answer)) {
+    answer = four[0];
+  }
+  const shuffled = shuffleArray([...four]);
+  if (!shuffled.includes(answer)) {
+    answer = shuffled[0];
+  }
+  return {
+    id: 10,
+    question: qText,
+    options: shuffled,
+    answer,
+    fact_key: buildVisualTenTestModeFactKey("image", 10),
+    fact_type: "concept",
+    imageQuestion: true,
+  };
+}
+
+/**
+ * Spørsmål 10 fra Commons extmetadata + ett OpenAI-kall. Returnerer null → bruk mal.
+ */
+async function tryBuildCommonsMetadataImageQuestion10(openai, model, sharedImage) {
+  if (
+    !openai ||
+    !sharedImage ||
+    typeof sharedImage !== "object" ||
+    sharedImage.source !== "wikimedia" ||
+    isVisualTenCronFallbackSharedImage(sharedImage)
+  ) {
+    return null;
+  }
+  const ext = await fetchCommonsImageExtMetadataForVisualTen(sharedImage.title);
+  if (!ext) {
+    console.log("[visual-10 commons_q10] no_extmetadata");
+    return null;
+  }
+  const anchor = pickCommonsMetadataFactAnchor(ext);
+  if (!anchor) {
+    console.log("[visual-10 commons_q10] insufficient_anchor");
+    return null;
+  }
+  const fileHint = String(sharedImage.title ?? "").trim().slice(0, 200);
+  const metaBlock = buildCommonsQ10UserMetadataContext(ext, anchor);
+  const userContent = [
+    `Bilde (Commons filnavn, kun kontekst): ${fileHint}`,
+    "",
+    metaBlock,
+  ].join("\n");
+
+  const maxAttempts = 2;
+  for (let a = 0; a < maxAttempts; a += 1) {
+    try {
+      const raw = await parseJsonChatCompletion(
+        openai.chat.completions.create({
+          model,
+          messages: [
+            { role: "system", content: CRON_COMMONS_Q10_SYSTEM },
+            { role: "user", content: userContent },
+          ],
+          response_format: { type: "json_object" },
+        })
+      );
+      const q = coerceAndValidateCronCommonsMetadataQ10(raw);
+      if (q) {
+        console.log(
+          `[visual-10 commons_q10] ok field=${anchor.key} attempt=${a + 1}`
+        );
+        return q;
+      }
+    } catch (err) {
+      console.warn(
+        `[visual-10 commons_q10] attempt=${a + 1} err=${JSON.stringify(
+          err && typeof err.message === "string" ? err.message : String(err)
+        )}`
+      );
+    }
+  }
+  return null;
+}
+
 async function tryResolveCronSharedImage(seedKey) {
   const fallback = { ...VISUAL_TEN_TEST_MODE_FALLBACK_IMAGE };
   const n = CRON_SHARED_IMAGE_THEMES.length;
   const base = visualTenSimpleCronHashMod(seedKey, n);
+  const imageOpts = isVisualTenCommonsQ10Disabled()
+    ? null
+    : { wikimediaOnly: true };
+  if (imageOpts) {
+    console.log(
+      "[visual-10 cron_image] wikimedia_only=true (rollback: set VISUAL_TEN_COMMONS_Q10_DISABLE=1 eller VISUAL_TEN_WIKIPEDIA_Q10_DISABLE=1)"
+    );
+  }
   for (let i = 0; i < 3; i += 1) {
     const theme = CRON_SHARED_IMAGE_THEMES[(base + i) % n];
     try {
       const shared = await pickSharedDecorativeImage(
         theme,
         getEmptyThemeLookupSupport(),
-        ""
+        "",
+        imageOpts
       );
       if (shared && typeof shared.url === "string" && shared.url.trim()) {
         return shared;
@@ -3721,7 +4042,9 @@ async function scheduledVisualTenQuizExists(poolOrClient, intervalSlotKey) {
 
 /**
  * Lagrer visual-10-format uten quiz_memory og uten legacy batch-pipeline.
- * Forsøker OpenAI for 9 faktaspørsmål (cron-llm), med stub som fallback; spørsmål 10 er alltid bilde.
+ * Forsøker OpenAI for 9 faktaspørsmål (cron-llm), med stub som fallback.
+ * Spørsmål 10: Commons extmetadata + LLM når aktivert; ellers mal fra bildetittel.
+ * Rollback: VISUAL_TEN_COMMONS_Q10_DISABLE=1 (eller VISUAL_TEN_WIKIPEDIA_Q10_DISABLE=1) → Pixabay tillates for bilde, mal Q10.
  * Kun når VISUAL_TEN_LEGACY_CRON ikke er satt.
  */
 async function generateAndStoreSimpleVisualTenQuiz(options = null) {
@@ -3784,6 +4107,38 @@ async function generateAndStoreSimpleVisualTenQuiz(options = null) {
     generationMode = result.generationMode;
   }
 
+  let commonsQ10Applied = false;
+  if (
+    apiKey &&
+    !isVisualTenCommonsQ10Disabled() &&
+    parsed?.sharedImage?.source === "wikimedia" &&
+    !isVisualTenCronFallbackSharedImage(parsed.sharedImage)
+  ) {
+    try {
+      const openaiCommons = new OpenAI({ apiKey });
+      const q10Commons = await tryBuildCommonsMetadataImageQuestion10(
+        openaiCommons,
+        model,
+        parsed.sharedImage
+      );
+      if (q10Commons) {
+        parsed = {
+          ...parsed,
+          questions: [...parsed.questions.slice(0, 9), q10Commons],
+        };
+        commonsQ10Applied = true;
+      }
+    } catch (commonsErr) {
+      console.warn(
+        `[visual-10 commons_q10] template_fallback err=${JSON.stringify(
+          commonsErr && typeof commonsErr.message === "string"
+            ? commonsErr.message
+            : String(commonsErr)
+        )}`
+      );
+    }
+  }
+
   const pool = createDatabasePool();
   const lockClient = intervalMeta ? await pool.connect() : null;
   let lockHeld = false;
@@ -3820,6 +4175,7 @@ async function generateAndStoreSimpleVisualTenQuiz(options = null) {
             variant: VISUAL_TEN_QUIZ_VARIANT,
             archiveLabel: buildVisualArchiveLabel(parsed.questions, new Date()),
             generationMode,
+            ...(commonsQ10Applied ? { commonsQ10: true } : {}),
             ...(intervalMeta ? intervalMeta : {}),
           }),
           difficulty,
@@ -3836,7 +4192,7 @@ async function generateAndStoreSimpleVisualTenQuiz(options = null) {
     }
 
     console.log(
-      `[visual-10 quiz_machine] stored interval=${intervalMeta?.intervalSlotKey ?? "manual"} generation=${generationMode} questions=${parsed.questions.length}`
+      `[visual-10 quiz_machine] stored interval=${intervalMeta?.intervalSlotKey ?? "manual"} generation=${generationMode} commons_q10=${commonsQ10Applied ? "yes" : "no"} questions=${parsed.questions.length}`
     );
 
     return {
@@ -3845,6 +4201,7 @@ async function generateAndStoreSimpleVisualTenQuiz(options = null) {
       variant: VISUAL_TEN_QUIZ_VARIANT,
       memoryMode,
       generationMode,
+      commonsQ10Applied,
     };
   } finally {
     if (lockHeld && lockClient && intervalMeta?.intervalSlotKey) {

@@ -392,11 +392,12 @@ function normalizeQuizImageCandidate(c) {
 }
 
 /**
- * Parallellsøk Wikimedia + Pixabay, samme søkestreng — kandidater normalisert til felles struktur.
+ * Parallellsøk Wikimedia + Pixabay (eller kun Wikimedia med options.wikimediaOnly).
  * @param {string} query
+ * @param {{ wikimediaOnly?: boolean } | null} [options]
  * @returns {Promise<{ wiki: QuizImageCandidate[], pix: QuizImageCandidate[], merged: QuizImageCandidate[] }>}
  */
-async function fetchImageCandidatesFromBothSources(query) {
+async function fetchImageCandidatesFromBothSources(query, options = null) {
   const q = String(query ?? "")
     .trim()
     .replace(/\s+/g, " ")
@@ -407,6 +408,9 @@ async function fetchImageCandidatesFromBothSources(query) {
     return { wiki: [], pix: [], merged: [] };
   }
 
+  const wikimediaOnly =
+    options && typeof options === "object" && options.wikimediaOnly === true;
+
   const [wikiRaw, pixRaw] = await Promise.all([
     searchWikimediaImageCandidates(q, 8).catch((e) => {
       logWikimedia(
@@ -414,12 +418,14 @@ async function fetchImageCandidatesFromBothSources(query) {
       );
       return [];
     }),
-    searchPixabayImageCandidates(q, 8).catch((e) => {
-      logPixabay(
-        `results=0 reason=unhandledError msg=${JSON.stringify(String(e?.message || e))}`
-      );
-      return [];
-    }),
+    wikimediaOnly
+      ? Promise.resolve([])
+      : searchPixabayImageCandidates(q, 8).catch((e) => {
+          logPixabay(
+            `results=0 reason=unhandledError msg=${JSON.stringify(String(e?.message || e))}`
+          );
+          return [];
+        }),
   ]);
 
   /** @type {QuizImageCandidate[]} */
@@ -441,7 +447,7 @@ async function fetchImageCandidatesFromBothSources(query) {
 
   const merged = [...wiki, ...pix];
   console.log(
-    `[quiz image][merge] query=${JSON.stringify(q)} candidates wiki=${wiki.length} pixabay=${pix.length} merged=${merged.length}`
+    `[quiz image][merge] query=${JSON.stringify(q)} wikimedia_only=${wikimediaOnly ? "true" : "false"} candidates wiki=${wiki.length} pixabay=${pix.length} merged=${merged.length}`
   );
   return { wiki, pix, merged };
 }
@@ -973,7 +979,18 @@ async function attachDecorativeQuizImages(theme, lookup, questions) {
  * Velg ett delt illustrasjonsbilde (Commons/Pixabay) uten per-spørsmålsrunde.
  * Brukes av visual-10-varianten; grunnmotorens attachDecorativeQuizImages er uendret.
  */
-async function pickSharedDecorativeImage(theme, lookup, questionContextText = "") {
+/**
+ * @param {string} theme
+ * @param {object} lookup
+ * @param {string} [questionContextText]
+ * @param {{ wikimediaOnly?: boolean } | null} [options] — kun Commons (for metadata-basert spørsmål 10).
+ */
+async function pickSharedDecorativeImage(
+  theme,
+  lookup,
+  questionContextText = "",
+  options = null
+) {
   const primaryQuery = buildPrimaryImageSearchQuery(theme, lookup);
   const q = String(primaryQuery ?? "").trim();
   if (!q || q.length < 2) {
@@ -982,7 +999,7 @@ async function pickSharedDecorativeImage(theme, lookup, questionContextText = ""
   const ctx = String(questionContextText ?? "")
     .trim()
     .slice(0, 500);
-  const { merged } = await fetchImageCandidatesFromBothSources(q);
+  const { merged } = await fetchImageCandidatesFromBothSources(q, options);
   if (!merged.length) {
     return null;
   }
