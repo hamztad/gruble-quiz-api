@@ -235,6 +235,33 @@ const VISUAL_TEN_TEST_MODE_FALLBACK_IMAGE = Object.freeze({
   pageUrl: "https://commons.wikimedia.org/wiki/File:Example.jpg",
 });
 
+/** Roterende kategorier for planlagt cron uten OpenAI (variert innhold, ingen kvalitetsporter). */
+const VISUAL_TEN_SIMPLE_CRON_CATEGORIES = Object.freeze([
+  "Geografi",
+  "Historie",
+  "Naturfag",
+  "Språk",
+  "Kunst og kultur",
+  "Musikk",
+  "Teknologi",
+  "Sport og friluft",
+  "Litteratur",
+  "Matematikk",
+  "Film og TV",
+  "Mat og drikke",
+]);
+
+function isVisualTenLegacyCronEnabled() {
+  const raw = String(process.env.VISUAL_TEN_LEGACY_CRON ?? "").trim();
+  return /^(1|true|yes|on)$/i.test(raw);
+}
+
+function visualTenSimpleCronHashMod(seed, modulo) {
+  const m = Math.max(1, Number(modulo) || 1);
+  const h = hashStringToPgLockId(String(seed ?? ""));
+  return Math.abs(h) % m;
+}
+
 function isVisualTenPipelineTestModeEnabled(options = null) {
   if (options && typeof options === "object" && options.visualTenTestMode === true) {
     return true;
@@ -2865,6 +2892,42 @@ async function buildVisualTenHardTestModeQuiz(memoryOptions = null) {
   };
 }
 
+/**
+ * Ti spørsmål, siste bilde-spørsmål — ingen LLM, ingen minne, ingen batch-validering.
+ * Brukes av planlagt cron når legacy-flyt er av.
+ */
+function buildSimpleMachineVisualTenQuiz(seedKey) {
+  const seed = String(seedKey ?? "").trim() || `seed-${Date.now()}`;
+  const poolCats = [...VISUAL_TEN_SIMPLE_CRON_CATEGORIES];
+  const start = visualTenSimpleCronHashMod(seed, poolCats.length);
+  const rotated = [...poolCats.slice(start), ...poolCats.slice(0, start)];
+  const nine = rotated.slice(0, VISUAL_TEN_QUIZ_QUESTION_COUNT - 1);
+  const nineQuestions = nine.map((cat, index) => {
+    const distractors = shuffleArray(poolCats.filter((c) => c !== cat)).slice(0, 3);
+    const options = shuffleArray([cat, ...distractors]);
+    return {
+      id: index + 1,
+      source_theme: cat,
+      question: `Spørsmål ${index + 1} av 10: Hvilken kategori beskriver temaet for dette spørsmålet?`,
+      options,
+      answer: cat,
+      fact_key: buildVisualTenTestModeFactKey(cat, index + 1),
+      fact_type: "concept",
+    };
+  });
+  const sharedImage = { ...VISUAL_TEN_TEST_MODE_FALLBACK_IMAGE };
+  const imageQuestion = buildVisualTenTestModeFallbackImageQuestion(
+    sharedImage,
+    VISUAL_TEN_DISPLAY_THEME
+  );
+  return {
+    theme: VISUAL_TEN_DISPLAY_THEME,
+    questions: [...nineQuestions, imageQuestion],
+    sharedImage,
+    variant: VISUAL_TEN_QUIZ_VARIANT,
+  };
+}
+
 async function generateVisualTenQuestionBatch(
   openai,
   model,
@@ -3419,6 +3482,100 @@ async function scheduledVisualTenQuizExists(poolOrClient, intervalSlotKey) {
   return result.rows.length > 0;
 }
 
+/**
+ * Lagrer visual-10-format uten OpenAI, uten quiz_memory, uten validering.
+ * Kun for planlagt cron / manuell cron-test når VISUAL_TEN_LEGACY_CRON ikke er satt.
+ */
+async function generateAndStoreSimpleVisualTenQuiz(options = null) {
+  const opts = options && typeof options === "object" ? options : {};
+  const memoryMode =
+    opts.quizSource === QUIZ_MEMORY_MODE.DAILY
+      ? QUIZ_MEMORY_MODE.DAILY
+      : QUIZ_MEMORY_MODE.CUSTOM;
+  const difficulty = "normal";
+  const intervalMeta =
+    opts.intervalMeta && typeof opts.intervalMeta === "object" ? opts.intervalMeta : null;
+  const seedKey =
+    intervalMeta?.intervalSlotKey ?? `manual-${Date.now()}`;
+
+  const pool = createDatabasePool();
+  const lockClient = intervalMeta ? await pool.connect() : null;
+  let lockHeld = false;
+  try {
+    if (intervalMeta?.intervalSlotKey) {
+      const lockId = hashStringToPgLockId(intervalMeta.intervalSlotKey);
+      const lockResult = await lockClient.query(
+        "SELECT pg_try_advisory_lock($1) AS locked",
+        [lockId]
+      );
+      lockHeld = lockResult.rows[0]?.locked === true;
+      if (!lockHeld) {
+        return { skipped: true, reason: "locked" };
+      }
+      if (await scheduledVisualTenQuizExists(lockClient, intervalMeta.intervalSlotKey)) {
+        return { skipped: true, reason: "already_exists" };
+      }
+    }
+
+    const parsed = buildSimpleMachineVisualTenQuiz(seedKey);
+
+    const client = lockClient || (await pool.connect());
+    try {
+      await client.query("BEGIN");
+      if (intervalMeta?.intervalSlotKey) {
+        if (await scheduledVisualTenQuizExists(client, intervalMeta.intervalSlotKey)) {
+          await client.query("ROLLBACK");
+          return { skipped: true, reason: "already_exists" };
+        }
+      }
+      await client.query(
+        "INSERT INTO quizzes (theme, questions, difficulty) VALUES ($1, $2::jsonb, $3)",
+        [
+          parsed.theme.trim(),
+          serializeQuizForStorage(parsed.sharedImage ?? null, parsed.questions, {
+            variant: VISUAL_TEN_QUIZ_VARIANT,
+            archiveLabel: buildVisualArchiveLabel(parsed.questions, new Date()),
+            generationMode: "simple-cron",
+            ...(intervalMeta ? intervalMeta : {}),
+          }),
+          difficulty,
+        ]
+      );
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      if (!lockClient && client) {
+        client.release();
+      }
+    }
+
+    console.log(
+      `[visual-10 quiz_machine] stored interval=${intervalMeta?.intervalSlotKey ?? "manual"} questions=${parsed.questions.length}`
+    );
+
+    return {
+      parsed,
+      difficulty,
+      variant: VISUAL_TEN_QUIZ_VARIANT,
+      memoryMode,
+      generationMode: "simple-cron",
+    };
+  } finally {
+    if (lockHeld && lockClient && intervalMeta?.intervalSlotKey) {
+      const lockId = hashStringToPgLockId(intervalMeta.intervalSlotKey);
+      await lockClient
+        .query("SELECT pg_advisory_unlock($1)", [lockId])
+        .catch(() => {});
+    }
+    if (lockClient) {
+      lockClient.release();
+    }
+    await pool.end().catch(() => {});
+  }
+}
+
 async function generateAndStoreVisualTenQuiz(options = null) {
   const opts = options && typeof options === "object" ? options : {};
   const memoryMode =
@@ -3575,10 +3732,15 @@ async function runVisualTenScheduleTick() {
   visualTenScheduleTickInFlight = true;
   try {
     const interval = intervalMeta;
-    const result = await generateAndStoreVisualTenQuiz({
-      quizSource: QUIZ_MEMORY_MODE.DAILY,
-      intervalMeta: interval,
-    });
+    const result = isVisualTenLegacyCronEnabled()
+      ? await generateAndStoreVisualTenQuiz({
+          quizSource: QUIZ_MEMORY_MODE.DAILY,
+          intervalMeta: interval,
+        })
+      : await generateAndStoreSimpleVisualTenQuiz({
+          quizSource: QUIZ_MEMORY_MODE.DAILY,
+          intervalMeta: interval,
+        });
     if (result?.skipped) {
       console.log(
         `[visual-10 schedule] interval=${interval.intervalSlotKey} skipped=${result.reason}${
@@ -3611,33 +3773,51 @@ async function runVisualTenScheduleTick() {
 
 async function runVisualTenScheduledCronJobOnce() {
   console.log(
-    `[visual-10 schedule] timezone=${VISUAL_TEN_SCHEDULE_TIMEZONE} interval_minutes=${VISUAL_TEN_CRON_INTERVAL_MINUTES}`
+    `[visual-10 schedule] mode=${
+      isVisualTenLegacyCronEnabled() ? "legacy_openai" : "quiz_machine_simple"
+    } timezone=${VISUAL_TEN_SCHEDULE_TIMEZONE} interval_minutes=${VISUAL_TEN_CRON_INTERVAL_MINUTES}`
   );
-  const result = await runVisualTenScheduleTick();
-  if (result?.generated) {
-    console.log(
-      `[visual-10 schedule] cron_done generated=true interval=${result.intervalSlotKey}`
-    );
-    return;
+  try {
+    const result = await runVisualTenScheduleTick();
+    if (result?.generated) {
+      console.log(
+        `[visual-10 schedule] cron_done generated=true interval=${result.intervalSlotKey}`
+      );
+      return;
+    }
+    if (result?.skipped) {
+      console.log(
+        `[visual-10 schedule] cron_done skipped=${result.reason ?? "unknown"} interval=${result.intervalSlotKey ?? "n/a"}`
+      );
+      return;
+    }
+    console.log("[visual-10 schedule] cron_done (unexpected empty result)");
+  } catch (err) {
+    if (!isVisualTenLegacyCronEnabled()) {
+      const msg =
+        err && typeof err.message === "string" ? err.message : String(err);
+      console.error(
+        `[visual-10 schedule] cron_done error_absorbed_exit_0 msg=${JSON.stringify(msg)}`
+      );
+      return;
+    }
+    throw err;
   }
-  if (result?.skipped) {
-    console.log(
-      `[visual-10 schedule] cron_done skipped=${result.reason ?? "unknown"} interval=${result.intervalSlotKey ?? "n/a"}`
-    );
-    return;
-  }
-  console.log("[visual-10 schedule] cron_done (unexpected empty result)");
 }
 
 /** One-off generation for shell / manual checks; skips cron interval deduplication. */
 async function runVisualTenCronManualTestOnce() {
   console.log(
-    "[visual-10 schedule] mode=manual_test (ignores interval deduplication)"
+    `[visual-10 schedule] mode=manual_test legacy_openai=${isVisualTenLegacyCronEnabled()} (ignores interval deduplication)`
   );
   try {
-    const result = await generateAndStoreVisualTenQuiz({
-      quizSource: QUIZ_MEMORY_MODE.DAILY,
-    });
+    const result = isVisualTenLegacyCronEnabled()
+      ? await generateAndStoreVisualTenQuiz({
+          quizSource: QUIZ_MEMORY_MODE.DAILY,
+        })
+      : await generateAndStoreSimpleVisualTenQuiz({
+          quizSource: QUIZ_MEMORY_MODE.DAILY,
+        });
     if (result?.skipped) {
       console.log(
         `[visual-10 schedule] manual_test skipped=${result.reason ?? "unknown"}`
