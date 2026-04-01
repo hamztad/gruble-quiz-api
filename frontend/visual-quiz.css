@@ -229,6 +229,23 @@ body.vq-strip-minimal .vq-footer-hint {
   width: auto;
 }
 
+.vq-try-alternatives--stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.55rem;
+}
+
+.vq-try-alternatives--stack .primary,
+.vq-try-alternatives--stack .ghost {
+  width: 100%;
+  justify-content: center;
+}
+
+.vq-try-alternatives:not(.vq-try-alternatives--stack) .primary {
+  width: 100%;
+}
+
 #gruble-visual-quiz-root .vq-shell {
   max-width: 100%;
   padding: 0;

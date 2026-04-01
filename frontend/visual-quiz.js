@@ -167,6 +167,10 @@ function getQs(questionId) {
       writtenSubmitting: false,
       pendingWrittenDisplay: undefined,
       writtenComposeSnapshot: undefined,
+      /** Fullførte skriftlige innsendinger med OK svar fra API (for ekstra forsøk før kun alternativer). */
+      writtenAttempts: 0,
+      /** Popover for «Ta en utfordring» på modusvalg-skjermen. */
+      writtenChallengeHelpOpen: false,
       infoMessage: "",
       infoClass: "hint",
       underRevision: false,
@@ -805,6 +809,7 @@ async function submitWritten(question, answer, qs) {
       qs.lastFeedback = { networkError: true };
       return;
     }
+    qs.writtenAttempts = (qs.writtenAttempts || 0) + 1;
     qs.answered = true;
     qs.lastFeedback = {
       correct: Boolean(result.correct),
@@ -974,16 +979,40 @@ function render() {
     }
   } else if (!qs.answerMode) {
     resultText = "";
+    const helpAriaExpanded = qs.writtenChallengeHelpOpen ? "true" : "false";
     answerBlock = `
       <div class="mode-choice">
         <button type="button" class="ghost" id="mode-mc">Alternativer</button>
-        <p class="mode-choice__explainer">
-          Med <strong>Ta en utfordring</strong> svarer du fritt — skriv eller bruk mikrofonen.
-          Du kan få <strong>bonuspoeng</strong> når svaret treffer godt, og
-          <strong>tilleggspoeng</strong> når du legger inn utfyllende detaljer eller ekstra
-          opplysninger som viser forståelse.
-        </p>
-        <button type="button" class="primary" id="mode-written">Ta en utfordring</button>
+        <div class="mode-choice__written-wrap">
+          <div class="mode-choice__written-row">
+            <button type="button" class="primary mode-choice__written-main" id="mode-written">Ta en utfordring</button>
+            <button
+              type="button"
+              class="vq-icon-help"
+              id="mode-written-help"
+              aria-label="Hva er Ta en utfordring?"
+              aria-expanded="${helpAriaExpanded}"
+              aria-controls="vq-written-help-popover"
+            >?</button>
+          </div>
+          <div
+            id="vq-written-help-popover"
+            class="vq-written-help-popover"
+            role="region"
+            aria-label="Om åpent svar"
+            ${qs.writtenChallengeHelpOpen ? "" : "hidden"}
+          >
+            <p>
+              Her svarer du <strong>fritt</strong> — skriv eller bruk mikrofonen.
+              Du kan få <strong>bonuspoeng</strong> når svaret treffer godt, og
+              <strong>tilleggspoeng</strong> når du legger inn utfyllende detaljer eller ekstra
+              opplysninger som viser forståelse.
+            </p>
+            <p class="vq-written-help-popover__note">
+              Etter første forsøk kan du velge å svare åpent én gang til eller gå over til alternativer.
+            </p>
+          </div>
+        </div>
       </div>
     `;
   } else if (qs.answerMode === "mc") {
@@ -1130,13 +1159,20 @@ function render() {
     const quote =
       qs.submittedAnswer != null ? String(qs.submittedAnswer) : "";
     const writtenOk = Boolean(qs.lastFeedback.correct);
-    const tryAlternativesBlock = writtenOk
-      ? ""
-      : `<p class="vq-try-alternatives"><button type="button" class="primary" id="written-to-mc">Prøv med alternativer</button></p>`;
+    const attempts = qs.writtenAttempts || 0;
+    let postWrittenActions = "";
+    if (!writtenOk && attempts === 1) {
+      postWrittenActions = `<div class="vq-try-alternatives vq-try-alternatives--stack">
+        <button type="button" class="primary" id="written-retry">Prøv en gang til</button>
+        <button type="button" class="ghost" id="written-to-mc">Velg alternativer</button>
+      </div>`;
+    } else if (!writtenOk && attempts >= 2) {
+      postWrittenActions = `<div class="vq-try-alternatives"><button type="button" class="primary" id="written-to-mc">Velg alternativer</button></div>`;
+    }
     resultContent =
       buildVqFeedbackWrittenStack(writtenOk, ptsDisplay, feedback, quote, {
         stripCorrectIntro: writtenOk && ptsDisplay >= 5,
-      }) + tryAlternativesBlock;
+      }) + postWrittenActions;
   } else if (
     qs.answered &&
     qs.lastFeedback &&
@@ -1282,12 +1318,20 @@ function render() {
       qs.answerMode = "written";
       qs.writtenComposeSnapshot = "";
       qs.lastFeedback = null;
+      qs.writtenChallengeHelpOpen = false;
       render();
     });
     document.getElementById("mode-mc")?.addEventListener("click", () => {
       qs.answerMode = "mc";
       qs.removedOptions = [];
       qs.lastFeedback = null;
+      qs.writtenChallengeHelpOpen = false;
+      render();
+    });
+    document.getElementById("mode-written-help")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      qs.writtenChallengeHelpOpen = !qs.writtenChallengeHelpOpen;
       render();
     });
   }
@@ -1312,6 +1356,16 @@ function render() {
       submitWritten(question, text, qs);
     });
   }
+
+  document.getElementById("written-retry")?.addEventListener("click", () => {
+    qs.answered = false;
+    qs.answerMode = "written";
+    qs.lastFeedback = null;
+    qs.submittedAnswer = undefined;
+    qs.writtenComposeSnapshot = "";
+    qs.pendingWrittenDisplay = undefined;
+    render();
+  });
 
   document.getElementById("written-to-mc")?.addEventListener("click", () => {
     qs.answered = false;
