@@ -308,6 +308,14 @@ function stripAnswerPrefixFromFeedback(answer, feedback) {
   return original;
 }
 
+/** Modelltekst som starter med «og det er riktig» etter overskriften «Vurdering» → lesbar «Det er riktig». */
+function normalizeOgDetErRiktigLead(text) {
+  return String(text ?? "").replace(
+    /^og\s+det\s+er\s+riktig([.!?,;:]*)(\s*)/i,
+    "Det er riktig$1$2"
+  );
+}
+
 /** Etter «Dette er riktig» i UI: fjern gjentatt bekreftelse og tomme innledninger («da dette er», «fordi»). */
 function stripWrittenCorrectFillerFromEval(text) {
   let s = String(text ?? "").trim();
@@ -344,7 +352,9 @@ function buildVqEvalSectionFromFeedback(feedbackRaw, quoteForStrip, isCorrectWri
   if (!feedbackTrim || isGenericMcFeedbackLine(feedbackTrim)) {
     return "";
   }
-  let feedbackBody = stripAnswerPrefixFromFeedback(quote, feedbackTrim);
+  let feedbackBody = normalizeOgDetErRiktigLead(
+    stripAnswerPrefixFromFeedback(quote, feedbackTrim)
+  );
   if (isCorrectWritten) {
     feedbackBody = stripWrittenCorrectFillerFromEval(feedbackBody);
   }

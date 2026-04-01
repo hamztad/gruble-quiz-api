@@ -529,7 +529,10 @@ function render() {
     const quote =
       qs.submittedAnswer != null ? String(qs.submittedAnswer) : "";
     const feedbackTrim = feedback.trim();
-    const feedbackBody = stripAnswerPrefixFromFeedback(quote, feedbackTrim);
+    const feedbackBody = stripAnswerPrefixFromFeedback(quote, feedbackTrim).replace(
+      /^og\s+det\s+er\s+riktig([.!?,;:]*)(\s*)/i,
+      "Det er riktig$1$2"
+    );
     const trivialFeedback =
       !feedbackBody || /^ingen forklaring\.?$/i.test(feedbackBody);
     const evalDistinct =
