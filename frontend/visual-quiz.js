@@ -976,8 +976,14 @@ function render() {
     resultText = "";
     answerBlock = `
       <div class="mode-choice">
-        <button type="button" class="primary" id="mode-written">Skriv eller snakk</button>
         <button type="button" class="ghost" id="mode-mc">Alternativer</button>
+        <p class="mode-choice__explainer">
+          Med <strong>Ta en utfordring</strong> svarer du fritt — skriv eller bruk mikrofonen.
+          Du kan få <strong>bonuspoeng</strong> når svaret treffer godt, og
+          <strong>tilleggspoeng</strong> når du legger inn utfyllende detaljer eller ekstra
+          opplysninger som viser forståelse.
+        </p>
+        <button type="button" class="primary" id="mode-written">Ta en utfordring</button>
       </div>
     `;
   } else if (qs.answerMode === "mc") {
@@ -1049,7 +1055,7 @@ function render() {
             class="ghost voice-mic-btn voice-mic-btn--round"
             data-voice-target="written-answer"
             data-voice-status="written-voice-status"
-            aria-label="Skriv eller snakk (tale)"
+            aria-label="Ta en utfordring: dikter svar med tale"
             ${formBusy ? "disabled" : ""}
           ><span class="voice-mic-btn__inner">${VOICE_SVG_MIC}</span></button>
           <span class="voice-status" id="written-voice-status" aria-live="polite"></span>

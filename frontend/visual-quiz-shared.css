@@ -6,16 +6,27 @@
 
 /* —— Modus, alternativer, skrivesvar, resultat (inne i .vq-play) —— */
 #gruble-visual-quiz-root .mode-choice {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   gap: 12px;
   margin: 18px 0;
 }
 
-@media (max-width: 520px) {
-  #gruble-visual-quiz-root .mode-choice {
-    grid-template-columns: 1fr;
-  }
+#gruble-visual-quiz-root .mode-choice__explainer {
+  margin: 0;
+  padding: 0.65rem 0.85rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: rgba(28, 16, 18, 0.72);
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(28, 16, 18, 0.08);
+  border-radius: 12px;
+}
+
+#gruble-visual-quiz-root .mode-choice__explainer strong {
+  color: #1c1012;
+  font-weight: 700;
 }
 
 #gruble-visual-quiz-root .options {
